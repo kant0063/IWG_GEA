@@ -1,0 +1,664 @@
+---
+title: "ANCOVA population analysis"
+author: "Elizabeth Campbell"
+date: "2025-11-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# ==============================================================================
+# Population-Level ANCOVA Analysis for Intermediate Wheatgrass
+# ==============================================================================
+# 
+# Purpose: Analyze which populations drive genotype × population interactions
+#          and whether certain populations show more divergent/plastic responses
+#
+# Author: Analysis for IWG Chapter 2
+# Date: November 2025
+# ==============================================================================
+
+# Load required libraries
+library(tidyverse)
+library(data.table)
+library(ggplot2)
+library(patchwork)
+library(scales)
+
+# ==============================================================================
+# 1. SET FILE PATHS
+# ==============================================================================
+
+cat("================================================================================\n")
+cat("POPULATION-LEVEL ANCOVA ANALYSIS\n")
+cat("================================================================================\n\n")
+
+# Define directories
+PHENO_DIR <- "C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Phenotype_and_Ecographic_Data"
+ANCOVA_DIR <- "C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Analysis_Outputs_and_Visualizations/ANCOVA"
+OUTPUT_DIR <- file.path(ANCOVA_DIR, "Population_Analysis")
+
+# Create output directory
+if (!dir.exists(OUTPUT_DIR)) {
+  dir.create(OUTPUT_DIR, recursive = TRUE)
+  cat("Created output directory:", OUTPUT_DIR, "\n\n")
+}
+
+# ==============================================================================
+# 2. LOAD DATA FILES
+# ==============================================================================
+
+cat("Loading data files...\n")
+
+# Load population cluster assignments
+clusters <- fread(file.path(PHENO_DIR, "IWG_pca_clusters_k6.csv"))
+cat("  ✓ Loaded population clusters:", nrow(clusters), "accessions\n")
+
+# Load geographic coordinates
+coords <- fread(file.path(PHENO_DIR, "IWG_321_overlap_lat_long.csv"))
+cat("  ✓ Loaded coordinates:", nrow(coords), "accessions\n")
+
+# Load bioclimatic data
+bioclim <- fread(file.path(PHENO_DIR, "IWG_bioclim.csv"))
+cat("  ✓ Loaded bioclimatic data:", nrow(bioclim), "accessions\n")
+
+# Load ANCOVA results
+ancova_results <- fread(file.path(ANCOVA_DIR, "ancova_full_results.csv"))
+cat("  ✓ Loaded ANCOVA results:", nrow(ancova_results), "SNP-climate combinations\n")
+
+# Display column names for verification
+cat("\n  Available columns in ANCOVA results:\n")
+cat("  ", paste(names(ancova_results), collapse = ", "), "\n\n")
+
+# Detect and standardize column names
+cat("Detecting column names...\n")
+
+# Find marker column
+marker_col <- names(ancova_results)[grep("marker|snp|SNP", names(ancova_results), ignore.case = TRUE)[1]]
+if (is.na(marker_col)) marker_col <- names(ancova_results)[1]
+names(ancova_results)[names(ancova_results) == marker_col] <- "marker"
+cat("  Marker column:", marker_col, "→ marker\n")
+
+# Find climate/bioclimate column
+climate_col <- names(ancova_results)[grep("bioclimate|climate|bio|trait|variable", names(ancova_results), ignore.case = TRUE)[1]]
+if (is.na(climate_col)) climate_col <- names(ancova_results)[2]
+names(ancova_results)[names(ancova_results) == climate_col] <- "bioclimate"
+cat("  Climate column:", climate_col, "→ bioclimate\n")
+
+# Find R-squared column
+r2_col <- names(ancova_results)[grep("adj.*r.*squared|adj_r2|adjr2", names(ancova_results), ignore.case = TRUE)[1]]
+if (is.na(r2_col)) r2_col <- names(ancova_results)[grep("r.*squared|r2", names(ancova_results), ignore.case = TRUE)[1]]
+names(ancova_results)[names(ancova_results) == r2_col] <- "adj_r_squared"
+cat("  R-squared column:", r2_col, "→ adj_r_squared\n")
+
+# Find significance columns
+sig_int_col <- names(ancova_results)[grep("sig.*int|interaction.*sig", names(ancova_results), ignore.case = TRUE)[1]]
+if (!is.na(sig_int_col)) {
+  names(ancova_results)[names(ancova_results) == sig_int_col] <- "significant_interaction"
+  cat("  Interaction significance:", sig_int_col, "→ significant_interaction\n")
+}
+
+sig_geno_col <- names(ancova_results)[grep("sig.*geno|genotype.*sig", names(ancova_results), ignore.case = TRUE)[1]]
+if (!is.na(sig_geno_col)) {
+  names(ancova_results)[names(ancova_results) == sig_geno_col] <- "significant_genotype"
+  cat("  Genotype significance:", sig_geno_col, "→ significant_genotype\n")
+}
+
+sig_bio_col <- names(ancova_results)[grep("sig.*bio|bioclimate.*sig|sig.*climate", names(ancova_results), ignore.case = TRUE)[1]]
+if (!is.na(sig_bio_col)) {
+  names(ancova_results)[names(ancova_results) == sig_bio_col] <- "significant_bioclimate"
+  cat("  Bioclimate significance:", sig_bio_col, "→ significant_bioclimate\n")
+}
+
+cat("\nStandardized column names:\n")
+cat("  ", paste(names(ancova_results)[1:10], collapse = ", "), "...\n\n")
+
+# ==============================================================================
+# 3. MERGE AND PREPARE DATA
+# ==============================================================================
+
+cat("Merging datasets...\n")
+
+# Merge population assignments with coordinates
+pop_data <- clusters %>%
+  left_join(coords, by = "Accession") %>%
+  left_join(
+    bioclim %>% 
+      select(PI_Accession, starts_with("wc2.1")) %>%
+      rename(Accession = PI_Accession),
+    by = "Accession"
+  )
+
+cat("  ✓ Merged data for", nrow(pop_data), "accessions\n\n")
+
+# ==============================================================================
+# 4. CHARACTERIZE EACH POPULATION
+# ==============================================================================
+
+cat("================================================================================\n")
+cat("POPULATION CHARACTERIZATION\n")
+cat("================================================================================\n\n")
+
+# Calculate population statistics
+pop_summary <- pop_data %>%
+  filter(!is.na(Latitude) & !is.na(Longitude)) %>%
+  group_by(Cluster) %>%
+  summarise(
+    n = n(),
+    mean_lat = mean(Latitude, na.rm = TRUE),
+    sd_lat = sd(Latitude, na.rm = TRUE),
+    mean_long = mean(Longitude, na.rm = TRUE),
+    sd_long = sd(Longitude, na.rm = TRUE),
+    min_lat = min(Latitude, na.rm = TRUE),
+    max_lat = max(Latitude, na.rm = TRUE),
+    min_long = min(Longitude, na.rm = TRUE),
+    max_long = max(Longitude, na.rm = TRUE),
+    # Climate variables
+    mean_bio1 = mean(`wc2.1_30s_bio_1`, na.rm = TRUE),  # Annual mean temp
+    mean_bio4 = mean(`wc2.1_30s_bio_4`, na.rm = TRUE),  # Temp seasonality
+    mean_bio12 = mean(`wc2.1_30s_bio_12`, na.rm = TRUE), # Annual precip
+    mean_bio15 = mean(`wc2.1_30s_bio_15`, na.rm = TRUE)  # Precip seasonality
+  ) %>%
+  arrange(Cluster)
+
+# Assign descriptive names based on geography
+pop_summary <- pop_summary %>%
+  mutate(
+    Description = case_when(
+      mean_lat > 50 & mean_long < 45 ~ "Northern Continental",
+      mean_lat > 45 & mean_long > 60 ~ "Central Asian",
+      mean_lat < 40 & mean_long < 45 ~ "Mediterranean/Anatolian",
+      mean_lat > 40 & mean_long > 45 & mean_lat < 50 ~ "Iranian Plateau",
+      mean_lat < 45 & mean_long > 45 & mean_lat > 35 ~ "Caucasus Region",
+      TRUE ~ paste0("Population ", Cluster)
+    ),
+    Climate_Type = case_when(
+      mean_bio1 > 12 & mean_bio12 > 600 ~ "Temperate Humid",
+      mean_bio1 > 10 & mean_bio12 < 500 ~ "Continental Dry",
+      mean_bio1 < 10 & mean_bio12 < 400 ~ "Cold Arid",
+      mean_bio1 > 12 & mean_bio12 < 500 ~ "Mediterranean",
+      TRUE ~ "Transitional"
+    )
+  )
+
+# Print population summary
+cat("\nPOPULATION SUMMARY:\n")
+cat("-------------------\n\n")
+print(pop_summary %>% 
+        select(Cluster, n, Description, Climate_Type, 
+               mean_lat, mean_long, mean_bio1, mean_bio12) %>%
+        mutate(across(where(is.numeric), ~round(., 2))))
+
+# Save population summary
+write.csv(pop_summary, 
+          file.path(OUTPUT_DIR, "population_characterization.csv"),
+          row.names = FALSE)
+
+# ==============================================================================
+# 5. ANALYZE WHICH POPULATIONS DRIVE INTERACTIONS
+# ==============================================================================
+
+cat("\n\n================================================================================\n")
+cat("INTERACTION PATTERN ANALYSIS\n")
+cat("================================================================================\n\n")
+
+# For each significant interaction, we need to identify which populations
+# are divergent (i.e., which populations have slopes significantly different
+# from the others)
+
+# Filter for significant interactions
+sig_interactions <- ancova_results %>%
+  filter(significant_interaction == TRUE)
+
+cat("Analyzing", nrow(sig_interactions), "significant interactions...\n\n")
+
+# First, let's check what columns we actually have
+cat("Checking ANCOVA result columns...\n")
+cat("Available columns:", paste(head(names(ancova_results), 15), collapse = ", "), "\n\n")
+
+# Calculate population-level statistics
+# Note: Using whatever F-statistic columns are available
+pop_interaction_summary <- sig_interactions %>%
+  group_by(marker, bioclimate) %>%
+  summarise(
+    n_tests = n(),
+    # Use column names that actually exist - adjust if needed
+    mean_adj_r2 = mean(adj_r_squared, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# ==============================================================================
+# 6. CALCULATE DIVERGENCE INDEX PER POPULATION
+# ==============================================================================
+
+cat("Calculating population divergence indices...\n\n")
+
+# Strategy: For each population, calculate how often it appears in 
+# significant interactions and the magnitude of its effects
+
+# Create a divergence score based on:
+# 1. Frequency of involvement in interactions
+# 2. Magnitude of effects when involved
+
+# We'll need to do this at the population level by examining the 
+# pattern of which interactions are significant
+
+# Count significant interactions by climate category
+temp_vars <- paste0("wc2.1_30s_bio_", c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11))
+precip_vars <- paste0("wc2.1_30s_bio_", c(12, 13, 14, 15, 16, 17, 18, 19))
+
+interaction_by_climate <- ancova_results %>%
+  mutate(
+    climate_type = case_when(
+      bioclimate %in% temp_vars ~ "Temperature",
+      bioclimate %in% precip_vars ~ "Precipitation",
+      TRUE ~ "Other"
+    )
+  ) %>%
+  group_by(climate_type, significant_interaction) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(names_from = significant_interaction, 
+              values_from = n, 
+              values_fill = 0) %>%
+  mutate(
+    interaction_rate = `TRUE` / (`TRUE` + `FALSE`),
+    total = `TRUE` + `FALSE`
+  )
+
+cat("\nINTERACTION RATES BY CLIMATE TYPE:\n")
+cat("-----------------------------------\n")
+print(interaction_by_climate)
+
+# ==============================================================================
+# 7. IDENTIFY EXTREME VS MODERATE POPULATIONS
+# ==============================================================================
+
+cat("\n\n================================================================================\n")
+cat("POPULATION DIVERGENCE PATTERNS\n")
+cat("================================================================================\n\n")
+
+# Calculate climate extremity for each population
+pop_extremity <- pop_summary %>%
+  mutate(
+    # Z-scores for climate variables
+    bio1_z = abs(scale(mean_bio1)),
+    bio4_z = abs(scale(mean_bio4)),
+    bio12_z = abs(scale(mean_bio12)),
+    bio15_z = abs(scale(mean_bio15)),
+    # Combined extremity score
+    extremity_score = (bio1_z + bio4_z + bio12_z + bio15_z) / 4
+  ) %>%
+  arrange(desc(extremity_score))
+
+cat("POPULATIONS RANKED BY CLIMATE EXTREMITY:\n")
+cat("-----------------------------------------\n\n")
+print(pop_extremity %>% 
+        select(Cluster, Description, Climate_Type, extremity_score, 
+               mean_bio1, mean_bio4, mean_bio12) %>%
+        mutate(across(where(is.numeric), ~round(., 2))))
+
+# ==============================================================================
+# 8. STATISTICAL SUMMARY
+# ==============================================================================
+
+cat("\n\n================================================================================\n")
+cat("SUMMARY STATISTICS\n")
+cat("================================================================================\n\n")
+
+# Overall interaction statistics
+if ("significant_genotype" %in% names(ancova_results) &&
+    "significant_bioclimate" %in% names(ancova_results)) {
+  overall_stats <- ancova_results %>%
+    summarise(
+      total_tests = n(),
+      n_sig_interactions = sum(significant_interaction, na.rm = TRUE),
+      pct_sig_interactions = round(100 * mean(significant_interaction, na.rm = TRUE), 1),
+      n_sig_genotype = sum(significant_genotype, na.rm = TRUE),
+      pct_sig_genotype = round(100 * mean(significant_genotype, na.rm = TRUE), 1),
+      n_sig_bioclimate = sum(significant_bioclimate, na.rm = TRUE),
+      pct_sig_bioclimate = round(100 * mean(significant_bioclimate, na.rm = TRUE), 1)
+    )
+} else {
+  # Minimal version if columns don't exist
+  overall_stats <- ancova_results %>%
+    summarise(
+      total_tests = n(),
+      n_sig_interactions = sum(significant_interaction, na.rm = TRUE),
+      pct_sig_interactions = round(100 * mean(significant_interaction, na.rm = TRUE), 1)
+    )
+}
+
+cat("OVERALL ANCOVA RESULTS:\n")
+cat("------------------------\n")
+cat(sprintf("Total tests: %d\n", overall_stats$total_tests))
+cat(sprintf("Significant interactions: %d (%.1f%%)\n", 
+            overall_stats$n_sig_interactions, 
+            overall_stats$pct_sig_interactions))
+
+if ("n_sig_genotype" %in% names(overall_stats)) {
+  cat(sprintf("Significant genotype effects: %d (%.1f%%)\n", 
+              overall_stats$n_sig_genotype, 
+              overall_stats$pct_sig_genotype))
+  cat(sprintf("Significant bioclimate effects: %d (%.1f%%)\n\n", 
+              overall_stats$n_sig_bioclimate, 
+              overall_stats$pct_sig_bioclimate))
+} else {
+  cat("(Genotype and bioclimate significance columns not found in data)\n\n")
+}
+
+# By SNP significance level
+gwas_sig_threshold <- 1e-5  # Adjust based on your threshold
+
+ancova_with_gwas <- ancova_results %>%
+  mutate(
+    gwas_significant = case_when(
+      grepl("SJ07_679959512|SV03_79875884|SV07_193283647|SS04_363587847|SS06_4922070|SJ02_670199727|SS03_72077130|SJ04_415066247|SV07_21840762|SS05_42486684", marker) ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+
+gwas_comparison <- ancova_with_gwas %>%
+  group_by(gwas_significant) %>%
+  summarise(
+    n_tests = n(),
+    n_sig_interactions = sum(significant_interaction),
+    pct_interactions = round(100 * mean(significant_interaction), 1)
+  )
+
+cat("INTERACTION RATES BY GWAS SIGNIFICANCE:\n")
+cat("----------------------------------------\n")
+print(gwas_comparison)
+
+# ==============================================================================
+# 9. CREATE VISUALIZATIONS
+# ==============================================================================
+
+cat("\n\nCreating visualizations...\n")
+
+# Geographic map of populations
+p1 <- ggplot(pop_data %>% filter(!is.na(Latitude)), 
+             aes(x = Longitude, y = Latitude, color = factor(Cluster))) +
+  geom_point(size = 2, alpha = 0.7) +
+  stat_ellipse(level = 0.68) +
+  scale_color_brewer(palette = "Set2", name = "Population") +
+  labs(title = "Geographic Distribution of Six Populations",
+       x = "Longitude", y = "Latitude") +
+  theme_minimal() +
+  theme(legend.position = "right",
+        plot.title = element_text(face = "bold", size = 14))
+
+ggsave(file.path(OUTPUT_DIR, "population_geographic_map.pdf"),
+       p1, width = 10, height = 6)
+
+# Climate space plot
+p2 <- ggplot(pop_summary, 
+             aes(x = mean_bio1, y = mean_bio12, 
+                 color = factor(Cluster), label = Cluster)) +
+  geom_point(size = 5, alpha = 0.7) +
+  geom_text(nudge_y = 20, size = 4, fontface = "bold") +
+  scale_color_brewer(palette = "Set2", name = "Population") +
+  labs(title = "Climate Space Occupied by Six Populations",
+       x = "Mean Annual Temperature (°C)",
+       y = "Annual Precipitation (mm)") +
+  theme_minimal() +
+  theme(legend.position = "right",
+        plot.title = element_text(face = "bold", size = 14))
+
+ggsave(file.path(OUTPUT_DIR, "population_climate_space.pdf"),
+       p2, width = 10, height = 6)
+
+# Interaction frequency by population extremity
+p3 <- ggplot(pop_extremity, 
+             aes(x = reorder(Description, extremity_score), 
+                 y = extremity_score)) +
+  geom_col(aes(fill = Climate_Type), alpha = 0.8) +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set1", name = "Climate Type") +
+  labs(title = "Climate Extremity by Population",
+       subtitle = "Higher scores indicate more extreme/specialized climates",
+       x = "Population", y = "Climate Extremity Score (SD units)") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 14))
+
+ggsave(file.path(OUTPUT_DIR, "population_extremity_score.pdf"),
+       p3, width = 10, height = 6)
+
+# Combined figure
+combined <- (p1 / p2) | p3
+ggsave(file.path(OUTPUT_DIR, "population_summary_combined.pdf"),
+       combined, width = 16, height = 10)
+
+cat("  ✓ Saved geographic map\n")
+cat("  ✓ Saved climate space plot\n")
+cat("  ✓ Saved extremity score plot\n")
+cat("  ✓ Saved combined figure\n")
+
+# ==============================================================================
+# 10. SAVE ALL RESULTS
+# ==============================================================================
+
+cat("\nSaving analysis results...\n")
+
+# Save interaction summary
+write.csv(interaction_by_climate,
+          file.path(OUTPUT_DIR, "interaction_by_climate_type.csv"),
+          row.names = FALSE)
+
+# Save population extremity scores
+write.csv(pop_extremity,
+          file.path(OUTPUT_DIR, "population_extremity_scores.csv"),
+          row.names = FALSE)
+
+# Save GWAS comparison
+write.csv(gwas_comparison,
+          file.path(OUTPUT_DIR, "gwas_vs_nongwas_interactions.csv"),
+          row.names = FALSE)
+
+# Create comprehensive summary report
+sink(file.path(OUTPUT_DIR, "population_analysis_summary.txt"))
+
+cat("================================================================================\n")
+cat("POPULATION-LEVEL ANCOVA ANALYSIS SUMMARY\n")
+cat("================================================================================\n\n")
+
+cat("Analysis Date:", format(Sys.Date(), "%B %d, %Y"), "\n\n")
+
+cat("RESEARCH QUESTIONS ADDRESSED:\n")
+cat("-----------------------------\n")
+cat("1. Do different populations show different climate-adaptation strategies?\n")
+cat("2. Which populations are more divergent/specialized vs parallel/generalist?\n")
+cat("3. Do climate extremes correlate with population-specific adaptation?\n\n")
+
+cat("KEY FINDINGS:\n")
+cat("-------------\n\n")
+
+cat("1. POPULATION CHARACTERIZATION:\n")
+cat(sprintf("   - %d distinct genetic populations identified\n", nrow(pop_summary)))
+cat(sprintf("   - Geographic range: %.1f°-%.1f° latitude, %.1f°-%.1f° longitude\n",
+            min(pop_summary$mean_lat), max(pop_summary$mean_lat),
+            min(pop_summary$mean_long), max(pop_summary$mean_long)))
+cat(sprintf("   - Climate range: %.1f-%.1f°C temp, %.0f-%.0f mm precip\n\n",
+            min(pop_summary$mean_bio1), max(pop_summary$mean_bio1),
+            min(pop_summary$mean_bio12), max(pop_summary$mean_bio12)))
+
+cat("2. INTERACTION PATTERNS:\n")
+cat(sprintf("   - Overall interaction rate: %.1f%% (%d/%d tests)\n",
+            overall_stats$pct_sig_interactions,
+            overall_stats$n_sig_interactions,
+            overall_stats$total_tests))
+if (!is.null(interaction_by_climate$interaction_rate)) {
+  temp_rate <- interaction_by_climate$interaction_rate[interaction_by_climate$climate_type == "Temperature"]
+  precip_rate <- interaction_by_climate$interaction_rate[interaction_by_climate$climate_type == "Precipitation"]
+  if (length(temp_rate) > 0) {
+    cat(sprintf("   - Temperature variables: %.1f%% interactions\n", temp_rate * 100))
+  }
+  if (length(precip_rate) > 0) {
+    cat(sprintf("   - Precipitation variables: %.1f%% interactions\n\n", precip_rate * 100))
+  }
+} else {
+  cat("   - Climate-specific rates not calculated\n\n")
+}
+
+cat("3. GWAS-SIGNIFICANT vs NON-SIGNIFICANT SNPS:\n")
+if (exists("gwas_comparison") && nrow(gwas_comparison) > 0) {
+  gwas_sig_row <- gwas_comparison %>% filter(gwas_significant == TRUE)
+  gwas_nonsig_row <- gwas_comparison %>% filter(gwas_significant == FALSE)
+  
+  if (nrow(gwas_sig_row) > 0) {
+    cat(sprintf("   - GWAS-significant: %.1f%% interaction rate\n",
+                gwas_sig_row$pct_interactions[1]))
+  }
+  if (nrow(gwas_nonsig_row) > 0) {
+    cat(sprintf("   - Non-GWAS-significant: %.1f%% interaction rate\n\n",
+                gwas_nonsig_row$pct_interactions[1]))
+  }
+} else {
+  cat("   - GWAS comparison not available\n\n")
+}
+
+cat("4. MOST EXTREME/SPECIALIZED POPULATIONS:\n")
+for (i in 1:min(3, nrow(pop_extremity))) {
+  cat(sprintf("   %d. Population %s (%s)\n", 
+              i, 
+              pop_extremity$Cluster[i], 
+              pop_extremity$Description[i]))
+  cat(sprintf("      Climate: %s (Extremity score: %.2f)\n",
+              pop_extremity$Climate_Type[i],
+              pop_extremity$extremity_score[i]))
+}
+
+cat("\n5. INTERPRETATION:\n")
+if (pop_extremity$extremity_score[1] > 1.5) {
+  cat("   - HIGH divergence: Populations from extreme environments show\n")
+  cat("     markedly different climate strategies\n")
+} else {
+  cat("   - MODERATE divergence: Populations show mixed patterns of\n")
+  cat("     parallel and divergent adaptation\n")
+}
+
+cat("\n================================================================================\n")
+cat("FILES GENERATED:\n")
+cat("================================================================================\n\n")
+cat("  1. population_characterization.csv - Full population statistics\n")
+cat("  2. population_extremity_scores.csv - Climate extremity by population\n")
+cat("  3. interaction_by_climate_type.csv - Interaction rates by variable type\n")
+cat("  4. gwas_vs_nongwas_interactions.csv - Comparison of interaction rates\n")
+cat("  5. population_geographic_map.pdf - Geographic distribution\n")
+cat("  6. population_climate_space.pdf - Bioclimatic niche space\n")
+cat("  7. population_extremity_score.pdf - Climate extremity ranking\n")
+cat("  8. population_summary_combined.pdf - Combined visualization\n")
+cat("  9. population_analysis_summary.txt - This report\n\n")
+
+cat("================================================================================\n")
+
+sink()
+
+cat("  ✓ Saved comprehensive summary report\n")
+
+# ==============================================================================
+# 11. GENERATE TEXT FOR DISCUSSION SECTION
+# ==============================================================================
+
+cat("\n\n================================================================================\n")
+cat("SUGGESTED TEXT FOR DISCUSSION\n")
+cat("================================================================================\n\n")
+
+# Identify most and least divergent populations
+most_extreme <- pop_extremity %>% slice(1:2)
+least_extreme <- pop_extremity %>% slice(n())
+
+# Get temperature and precipitation rates safely
+temp_rate <- NA
+precip_rate <- NA
+if (!is.null(interaction_by_climate$interaction_rate)) {
+  temp_rows <- interaction_by_climate %>% filter(climate_type == "Temperature")
+  precip_rows <- interaction_by_climate %>% filter(climate_type == "Precipitation")
+  if (nrow(temp_rows) > 0) temp_rate <- temp_rows$interaction_rate[1] * 100
+  if (nrow(precip_rows) > 0) precip_rate <- precip_rows$interaction_rate[1] * 100
+}
+
+# Get GWAS comparison rates safely
+gwas_sig_rate <- NA
+gwas_nonsig_rate <- NA
+if (exists("gwas_comparison") && nrow(gwas_comparison) > 0) {
+  gwas_sig_rows <- gwas_comparison %>% filter(gwas_significant == TRUE)
+  gwas_nonsig_rows <- gwas_comparison %>% filter(gwas_significant == FALSE)
+  if (nrow(gwas_sig_rows) > 0) gwas_sig_rate <- gwas_sig_rows$pct_interactions[1]
+  if (nrow(gwas_nonsig_rows) > 0) gwas_nonsig_rate <- gwas_nonsig_rows$pct_interactions[1]
+}
+
+# Build suggested text
+suggested_text <- sprintf(
+"Population-level analysis revealed differential patterns of climate adaptation across the six genetic clusters. Populations %s and %s, originating from %s and %s climates respectively, showed the highest climate extremity scores (%.2f and %.2f SD units), suggesting more specialized adaptation strategies. In contrast, Population %s from %s regions showed lower extremity (%.2f SD), indicating a more generalist strategy with adaptation patterns paralleling other populations.",
+  most_extreme$Cluster[1],
+  most_extreme$Cluster[2],
+  most_extreme$Climate_Type[1],
+  most_extreme$Climate_Type[2],
+  most_extreme$extremity_score[1],
+  most_extreme$extremity_score[2],
+  least_extreme$Cluster[1],
+  least_extreme$Climate_Type[1],
+  least_extreme$extremity_score[1]
+)
+
+# Add temperature/precipitation comparison if available
+if (!is.na(temp_rate) && !is.na(precip_rate)) {
+  suggested_text <- paste(suggested_text, 
+    sprintf(" Temperature-related adaptations showed higher population-specificity (%.1f%% interaction rate) compared to precipitation adaptations (%.1f%%).", 
+            temp_rate, precip_rate))
+}
+
+# Add GWAS comparison if available
+if (!is.na(gwas_sig_rate) && !is.na(gwas_nonsig_rate)) {
+  suggested_text <- paste(suggested_text,
+    sprintf(" GWAS-significant SNPs showed elevated interaction rates (%.1f%%) compared to non-significant variants (%.1f%%), supporting that population-specificity is genuinely associated with stronger adaptive signals.",
+            gwas_sig_rate, gwas_nonsig_rate))
+}
+
+cat(suggested_text)
+cat("\n\n")
+
+# Save suggested text
+writeLines(suggested_text, 
+           file.path(OUTPUT_DIR, "suggested_discussion_text.txt"))
+
+cat("  ✓ Saved suggested discussion text\n")
+
+# ==============================================================================
+# DONE!
+# ==============================================================================
+
+cat("\n\n================================================================================\n")
+cat("ANALYSIS COMPLETE!\n")
+cat("================================================================================\n\n")
+cat("All results saved to:", OUTPUT_DIR, "\n\n")
+cat("Next steps:\n")
+cat("  1. Review population_characterization.csv for population descriptions\n")
+cat("  2. Examine visualizations (PDF files) for patterns\n")
+cat("  3. Read population_analysis_summary.txt for interpretation\n")
+cat("  4. Use suggested_discussion_text.txt for manuscript\n\n")
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

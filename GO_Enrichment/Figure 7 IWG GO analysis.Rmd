@@ -1,0 +1,179 @@
+---
+title: "GO Figure 7"
+author: "Elizabeth Campbell"
+date: "2026-01-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+#===============================================================================
+# Gene Ontology Enrichment Visualization - Figure 7
+# Temperature vs. Precipitation Pathway Comparison
+#
+# Author: Elizabeth Campbell
+# Affiliation: Department of Tropical Plant and Soil Sciences,
+#              University of Hawaii at Manoa
+# Date: February 2026
+#
+# Description: Creates side-by-side comparison of GO enrichment results
+#              showing distinct molecular pathways for temperature
+#              (hormone signaling) vs. precipitation (chromatin remodeling)
+#===============================================================================
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(patchwork)
+library(scales)
+
+# File paths
+base_dir <- "C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2"
+go_dir <- file.path(base_dir, "Data/Gene Ontology")
+output_dir <- file.path(go_dir, "Publication_Figures")
+
+setwd(go_dir)
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Load data
+temp_results <- read.csv("GO_enrichment_temperature_group.csv")
+precip_results <- read.csv("GO_enrichment_precipitation_group.csv")
+
+cat("Loaded temperature results:", nrow(temp_results), "GO terms\n")
+cat("Loaded precipitation results:", nrow(precip_results), "GO terms\n\n")
+
+# Prepare data - top 10 significant terms per category
+temp_data <- temp_results %>%
+  filter(FDR < 0.05) %>%
+  arrange(FDR) %>%
+  head(10) %>%
+  mutate(
+    Term = gsub("\\.\\.\\..*", "", Term),
+    Term = reorder(Term, -log10(FDR)),
+    Category = "Temperature"
+  )
+
+precip_data <- precip_results %>%
+  filter(FDR < 0.05) %>%
+  arrange(FDR) %>%
+  head(10) %>%
+  mutate(
+    Term = gsub("\\.\\.\\..*", "", Term),
+    Term = reorder(Term, -log10(FDR)),
+    Category = "Precipitation"
+  )
+
+cat("Temperature:", nrow(temp_data), "terms\n")
+cat("Precipitation:", nrow(precip_data), "terms\n\n")
+
+#===============================================================================
+# Create Publication Figure
+#===============================================================================
+
+# Temperature panel
+p1 <- ggplot(temp_data, aes(x = -log10(FDR), y = Term)) +
+  geom_point(aes(size = Significant), color = "#E69F00", alpha = 0.8) +
+  geom_vline(xintercept = -log10(0.05), linetype = "dashed", 
+             color = "gray50", linewidth = 0.5) +
+  scale_size_continuous(
+    name = "Gene\nCount",
+    range = c(3, 10),
+    breaks = c(3, 6, 9, 12)
+  ) +
+  scale_x_continuous(
+    expand = c(0.02, 0),
+    limits = c(1.6, 2.1),
+    breaks = seq(1.7, 2.0, 0.1)
+  ) +
+  labs(
+    title = "Temperature Adaptation",
+    subtitle = "Hormone signaling pathways",
+    x = expression(-log[10]*"(FDR)"),
+    y = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
+    plot.subtitle = element_text(hjust = 0.5, size = 10, color = "gray40"),
+    axis.text.y = element_text(size = 10, color = "black"),
+    axis.text.x = element_text(size = 9, color = "black"),
+    axis.title.x = element_text(size = 11, margin = margin(t = 8)),
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.3),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(color = "gray70", fill = NA, linewidth = 0.5),
+    legend.position = "right",
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+# Precipitation panel
+p2 <- ggplot(precip_data, aes(x = -log10(FDR), y = Term)) +
+  geom_point(aes(size = Significant), color = "#56B4E9", alpha = 0.8) +
+  geom_vline(xintercept = -log10(0.05), linetype = "dashed", 
+             color = "gray50", linewidth = 0.5) +
+  scale_size_continuous(
+    name = "Gene\nCount",
+    range = c(3, 10),
+    breaks = c(2, 3, 4, 5)
+  ) +
+  scale_x_continuous(
+    expand = c(0.02, 0),
+    limits = c(1.6, 2.1),
+    breaks = seq(1.7, 2.0, 0.1)
+  ) +
+  labs(
+    title = "Precipitation Adaptation",
+    subtitle = "Chromatin remodeling pathways",
+    x = expression(-log[10]*"(FDR)"),
+    y = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
+    plot.subtitle = element_text(hjust = 0.5, size = 10, color = "gray40"),
+    axis.text.y = element_text(size = 10, color = "black"),
+    axis.text.x = element_text(size = 9, color = "black"),
+    axis.title.x = element_text(size = 11, margin = margin(t = 8)),
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.3),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(color = "gray70", fill = NA, linewidth = 0.5),
+    legend.position = "right",
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+# Combine panels
+combined <- p1 + p2 + 
+  plot_annotation(
+    tag_levels = 'A',
+    theme = theme(plot.tag = element_text(size = 14, face = "bold"))
+  )
+
+# Save publication version
+ggsave(
+  file.path(output_dir, "Figure7_GO_Enrichment_FINAL.png"),
+  combined,
+  width = 12,
+  height = 6,
+  dpi = 600,
+  bg = "white"
+)
+
+ggsave(
+  file.path(output_dir, "Figure7_GO_Enrichment_FINAL.pdf"),
+  combined,
+  width = 12,
+  height = 6,
+  device = cairo_pdf
+)
+
+cat("\n✓ Figure 7 saved successfully!\n")
+cat("   - Figure7_GO_Enrichment_FINAL.png\n")
+cat("   - Figure7_GO_Enrichment_FINAL.pdf\n\n")
+
+#===============================================================================
+# END
+#===============================================================================
+```

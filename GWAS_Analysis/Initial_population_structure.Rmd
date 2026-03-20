@@ -1,0 +1,393 @@
+
+
+```{r}
+#===============================================================================
+# Population Structure Analysis for Intermediate Wheatgrass (Kernza)
+# Author: Elizabeth [Last Name]
+# Affiliation: Department of Tropical Plant and Soil Sciences, 
+#              University of Hawaii at Manoa
+# Date: [Date]
+#
+# Description: Principal components analysis, hierarchical clustering, and 
+#              spatial structure analysis of 341 Thinopyrum intermedium accessions
+#              using 17,797 SNPs from genotyping-by-sequencing.
+#
+# Reference: Methods based on Zheng et al. (2012), Lê et al. (2008), 
+#            and Caye et al. (2018)
+#===============================================================================
+
+#===============================================================================
+# 1. SETUP AND LIBRARY LOADING
+#===============================================================================
+
+# Set working directory - MODIFY THIS PATH FOR YOUR SYSTEM
+setwd("path/to/your/data")
+
+# Load required packages
+library(SNPRelate)      # v1.28.0 - PCA and LD pruning
+library(FactoMineR)     # v2.8 - HCPC clustering
+library(factoextra)     # Visualization of multivariate analyses
+library(ggplot2)        # Publication-quality graphics
+library(dplyr)          # Data manipulation
+library(sf)             # Spatial data handling
+library(rnaturalearth)  # World map data
+library(tess3r)         # v1.1.0 - Spatial population structure
+library(rrBLUP)         # Kinship matrix calculation
+
+# Set random seed for reproducibility
+set.seed(1000)
+
+#===============================================================================
+# 2. DATA IMPORT AND SNP FILTERING
+#===============================================================================
+
+# Import VCF file and convert to GDS format
+vcf.fn <- "IWG_PI.vcf"
+snpgdsVCF2GDS(vcf.fn, "IWG.gds", method = "copy.num.of.ref")
+
+# Open GDS file and examine summary
+genofile <- snpgdsOpen("IWG.gds")
+snpgdsSummary("IWG.gds")
+
+# Filter SNPs: MAF > 0.005 and missing data < 5%
+# Initial markers: 17,797 SNPs
+# Post-filtering: 5,449 SNPs
+snp.filter <- snpgdsLDpruning(genofile, 
+                               maf = 0.005,
+                               missing.rate = 0.05,
+                               ld.threshold = 0.2,
+                               autosome.only = FALSE,
+                               slide.max.bp = 500000,  # 500-kb sliding window
+                               slide.max.n = NA)
+
+# Extract filtered SNP IDs
+snpset.id <- unlist(snp.filter)
+cat("Number of SNPs after LD pruning:", length(snpset.id), "\n")
+# Expected output: 4,703 independent markers
+
+#===============================================================================
+# 3. PRINCIPAL COMPONENTS ANALYSIS
+#===============================================================================
+
+# Perform PCA on LD-pruned SNPs
+pca <- snpgdsPCA(genofile, 
+                 snp.id = snpset.id, 
+                 num.thread = 2,
+                 autosome.only = FALSE)
+
+# Calculate variance explained by each PC
+pc.percent <- pca$varprop * 100
+cat("\nVariance explained by first 5 PCs:\n")
+print(round(pc.percent[1:5], 2))
+# PC1: 13.7%, PC2: 2.3%, PC3-5: ~1-2% each (approximate 20% cumulative)
+
+# Create dataframe with sample IDs and first 5 PCs
+pca_data <- data.frame(
+  sample.id = pca$sample.id,
+  EV1 = pca$eigenvect[, 1],
+  EV2 = pca$eigenvect[, 2],
+  EV3 = pca$eigenvect[, 3],
+  EV4 = pca$eigenvect[, 4],
+  EV5 = pca$eigenvect[, 5],
+  stringsAsFactors = FALSE
+)
+
+# Export PCA results
+write.csv(pca_data, "IWG_pca_eigenvectors.csv", row.names = FALSE)
+
+# Close GDS file
+snpgdsClose(genofile)
+
+#===============================================================================
+# 4. HIERARCHICAL CLUSTERING ON PRINCIPAL COMPONENTS (HCPC)
+#===============================================================================
+
+# Prepare data for HCPC (remove sample ID column)
+pca_matrix <- pca_data[, 2:6]
+rownames(pca_matrix) <- pca_data$sample.id
+
+# Perform PCA using FactoMineR (required for HCPC)
+res.pca <- PCA(pca_matrix, graph = FALSE)
+
+# Generate scree plot
+scree_plot <- fviz_screeplot(res.pca, 
+                              addlabels = TRUE, 
+                              ylim = c(0, 50),
+                              main = "Scree Plot of Principal Components")
+ggsave("PCA_scree_plot.pdf", scree_plot, width = 8, height = 6)
+
+# Perform HCPC with automatic cluster selection
+# Uses Ward's hierarchical clustering with inertia gain criterion
+res.hcpc <- HCPC(res.pca, 
+                 graph = FALSE,
+                 nb.clust = -1)  # Automatic determination of optimal K
+
+# Extract cluster assignments
+# Optimal K = 6 clusters (n = 24, 12, 27, 28, 169, 61)
+cat("\nNumber of clusters identified:", max(res.hcpc$data.clust$clust), "\n")
+cat("Cluster sizes:\n")
+print(table(res.hcpc$data.clust$clust))
+
+# Create dendrogram with cluster colors
+dendrogram <- fviz_dend(res.hcpc, 
+                        cex = 0.5,
+                        palette = "jco",
+                        rect = TRUE,
+                        rect_fill = TRUE,
+                        rect_border = "jco",
+                        labels_track_height = 0.8,
+                        main = "Hierarchical Clustering Dendrogram (n = 341)")
+
+ggsave("HCPC_dendrogram.pdf", dendrogram, width = 12, height = 8)
+
+# Export cluster assignments
+pca_with_clusters <- res.hcpc$data.clust
+pca_with_clusters$sample.id <- rownames(pca_with_clusters)
+write.csv(pca_with_clusters, "IWG_pca_with_clusters.csv", row.names = FALSE)
+```
+
+
+```{r}
+#===============================================================================
+# 5. VISUALIZATION: 2D PCA PLOT
+#===============================================================================
+
+# Prepare data
+plot_data <- pca_with_clusters
+plot_data$clust <- as.factor(plot_data$clust)
+```
+
+
+```{r}
+# Create publication-quality PCA plot with actual variance values
+pca_plot <- ggplot(plot_data, aes(x = EV1, y = EV2, color = clust, fill = clust)) +
+  stat_ellipse(type = "t", 
+               geom = "polygon", 
+               alpha = 0.15, 
+               show.legend = FALSE,
+               level = 0.95) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  scale_color_manual(
+  values = c("1" = "red", "2" = "green", "3" = "blue",
+             "4" = "purple", "5" = "orange", "6" = "yellow"),
+  name = "Genetic Cluster"
+) +
+scale_fill_manual(
+  values = c("1" = "red", "2" = "green", "3" = "blue",
+             "4" = "purple", "5" = "orange", "6" = "yellow")
+) +
+  labs(
+    title = "Population Structure of Intermediate Wheatgrass Germplasm",
+    x = paste0("PC1 (", round(pc.percent[1], 1), "% variance)"),
+    y = paste0("PC2 (", round(pc.percent[2], 1), "% variance)")
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.position = "right",
+    legend.background = element_rect(fill = "white", color = "black"),
+    axis.text = element_text(color = "black"),
+    axis.ticks = element_line(color = "black")
+  )
+
+ggsave("PCA_biplot_clusters.pdf", pca_plot, width = 8, height = 6, dpi = 300)
+
+#===============================================================================
+# 6. GEOGRAPHIC VISUALIZATION
+#===============================================================================
+
+# Load geographic data
+bioclim_data <- read.csv("IWG_bioclim.csv")
+
+# Merge PCA clusters with geographic coordinates
+geo_data <- merge(bioclim_data, pca_with_clusters,
+                  by.x = "PI_Accession",
+                  by.y = "sample.id",
+                  all.x = FALSE)
+
+# Load world map
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Create map showing cluster distribution across Eurasia
+geo_plot <- ggplot() +
+  geom_sf(data = world, fill = "gray95", color = "gray70", size = 0.2) +
+  coord_sf(xlim = c(-20, 150), ylim = c(-40, 80)) +
+  geom_point(data = geo_data,
+             aes(x = Longitude, y = Latitude, fill = as.factor(clust)),
+             shape = 21, 
+             size = 3, 
+             alpha = 0.8,
+             color = "black",
+             stroke = 0.5) +
+  scale_fill_manual(
+  values = c("1" = "red", "2" = "green", "3" = "blue",
+             "4" = "purple", "5" = "orange", "6" = "yellow"),
+  name = "Genetic Cluster",
+  labels = paste0("Cluster ", 1:6)
+) +
+  labs(
+    title = "Geographic Distribution of Genetic Clusters",
+    subtitle = "Intermediate wheatgrass native range (n = 341)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 11),
+    legend.position = "right",
+    legend.background = element_rect(fill = "white", color = "black"),
+    panel.grid.major = element_line(color = "gray90", size = 0.2),
+    panel.background = element_rect(fill = "aliceblue")
+  )
+
+ggsave("Geographic_cluster_distribution.pdf", geo_plot, width = 12, height = 8, dpi = 300)
+```
+
+
+```{r}
+#===============================================================================
+# 7. SPATIAL POPULATION STRUCTURE (TESS3R)
+#===============================================================================
+
+# Prepare genotype matrix for tess3r
+genofile <- snpgdsOpen("IWG.gds")
+geno_matrix <- snpgdsGetGeno(genofile, snp.id = snpset.id)
+snpgdsClose(genofile)
+
+# Prepare coordinate matrix (must match genotype order)
+coords <- geo_data %>%
+  arrange(match(PI_Accession, pca_data$sample.id)) %>%
+  select(Longitude, Latitude) %>%
+  as.matrix()
+
+# Run TESS3 for K = 1 to 10
+tess3_results <- list()
+for (k in 1:10) {
+  tess3_results[[k]] <- tess3(X = geno_matrix,
+                              coord = coords,
+                              K = k,
+                              ploidy = 6,  # Hexaploid
+                              lambda = 1.0,
+                              method = "projected.ls")
+}
+
+# Calculate cross-entropy for model selection
+cross_entropy <- sapply(tess3_results, function(x) x$crossentropy)
+
+# Plot cross-entropy criterion
+ce_plot <- ggplot(data.frame(K = 1:10, CE = cross_entropy), 
+                  aes(x = K, y = CE)) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  scale_x_continuous(breaks = 1:10) +
+  labs(
+    title = "TESS3 Cross-Entropy Criterion",
+    x = "Number of Ancestral Populations (K)",
+    y = "Cross-Entropy"
+  ) +
+  theme_classic(base_size = 12)
+
+ggsave("TESS3_crossentropy.pdf", ce_plot, width = 8, height = 6, dpi = 300)
+
+# Extract Q-matrix for optimal K (K = 6, matching HCPC)
+Q_matrix <- qmatrix(tess3_results[[6]])
+
+# Create spatial interpolation plot
+plot(tess3_results[[6]], coords, 
+     method = "map.max",
+     interpol = FieldsKrigModel(10),
+     main = "Spatial Genetic Structure (K = 6)",
+     xlab = "Longitude",
+     ylab = "Latitude",
+     resolution = c(300, 300),
+     cex = 0.5)
+
+# Export Q-matrix
+write.csv(Q_matrix, "TESS3_Q_matrix_K6.csv", row.names = FALSE)
+
+#===============================================================================
+# 8. KINSHIP MATRIX CALCULATION
+#===============================================================================
+
+# Reload genotype data in numeric format for kinship calculation
+genofile <- snpgdsOpen("IWG.gds")
+geno_kinship <- snpgdsGetGeno(genofile, snp.id = snpset.id, snpfirst = FALSE)
+sample_ids <- read.gdsn(index.gdsn(genofile, "sample.id"))
+snpgdsClose(genofile)
+
+# Transpose and prepare for rrBLUP (samples as rows, markers as columns)
+geno_kinship <- t(geno_kinship)
+rownames(geno_kinship) <- sample_ids
+
+# Calculate kinship matrix using VanRaden method
+# K = (M - P)(M - P)' / (2 * sum(p * (1-p)))
+# where M is the marker matrix and P is 2*allele frequency
+K_matrix <- A.mat(geno_kinship, 
+                  min.MAF = NULL,  # Already filtered
+                  max.missing = 1,  # Already filtered
+                  impute.method = "mean",
+                  return.imputed = FALSE)
+
+# Examine kinship distribution
+kinship_values <- K_matrix[lower.tri(K_matrix)]
+cat("\nKinship matrix summary:\n")
+cat("Mean relatedness:", round(mean(kinship_values), 4), "\n")
+cat("Range:", round(min(kinship_values), 4), "to", round(max(kinship_values), 4), "\n")
+
+# Export kinship matrix
+write.csv(K_matrix, "Kinship_matrix_VanRaden.csv", row.names = TRUE)
+
+# Visualize kinship matrix (heatmap)
+pdf("Kinship_matrix_heatmap.pdf", width = 10, height = 10)
+heatmap(K_matrix, 
+        col = colorRampPalette(c("blue", "white", "red"))(100),
+        symm = TRUE,
+        main = "Kinship Matrix Heatmap",
+        cexRow = 0.3,
+        cexCol = 0.3)
+dev.off()
+
+#===============================================================================
+# 9. EXPORT COVARIATES FOR GWAS
+#===============================================================================
+
+# Prepare final covariate file with:
+# - Sample IDs
+# - First 5 PCs (explaining ~20% of genetic variance)
+# - Cluster assignments
+# - Q-matrix from TESS3
+
+gwas_covariates <- data.frame(
+  sample.id = pca_data$sample.id,
+  PC1 = pca_data$EV1,
+  PC2 = pca_data$EV2,
+  PC3 = pca_data$EV3,
+  PC4 = pca_data$EV4,
+  PC5 = pca_data$EV5,
+  Cluster = pca_with_clusters$clust,
+  Q_matrix
+)
+
+write.csv(gwas_covariates, "GWAS_population_structure_covariates.csv", row.names = FALSE)
+
+cat("\n=================================================================\n")
+cat("Population structure analysis complete!\n")
+cat("=================================================================\n")
+cat("\nFiles generated:\n")
+cat("1. IWG_pca_eigenvectors.csv - PCA results\n")
+cat("2. IWG_pca_with_clusters.csv - PCA with cluster assignments\n")
+cat("3. PCA_scree_plot.pdf - Variance explained by PCs\n")
+cat("4. HCPC_dendrogram.pdf - Hierarchical clustering tree\n")
+cat("5. PCA_biplot_clusters.pdf - 2D PCA plot with clusters\n")
+cat("6. Geographic_cluster_distribution.pdf - Map of cluster locations\n")
+cat("7. TESS3_crossentropy.pdf - Model selection plot\n")
+cat("8. TESS3_Q_matrix_K6.csv - Ancestry proportions\n")
+cat("9. Kinship_matrix_VanRaden.csv - Relatedness matrix\n")
+cat("10. Kinship_matrix_heatmap.pdf - Kinship visualization\n")
+cat("11. GWAS_population_structure_covariates.csv - Final covariates\n")
+cat("\n=================================================================\n")
+
+#===============================================================================
+# END OF SCRIPT
+#===============================================================================
+```
+

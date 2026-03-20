@@ -1,0 +1,273 @@
+---
+title: "IWG 3_4_2026"
+author: "Elizabeth Campbell"
+date: "2026-03-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+## ============================================================
+## IWG Allele × BioClim Boxplots
+## ============================================================
+
+library(vcfR)
+library(tidyverse)
+
+# ----------------------------------------------------------
+# 0. File paths
+# ----------------------------------------------------------
+vcf_path     <- "C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Data/Processed_Data/IWG_PI.vcf"
+bioclim_path <- "C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Data/Phenotype_and_Ecographic_Data/IWG_bioclim.csv"
+out_dir      <- "C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Manuscript/Tables/"
+
+# ----------------------------------------------------------
+# 1. Define 10 sig SNPs and their BioClim associations
+# ----------------------------------------------------------
+snp_bioclim <- tibble(
+  SNP = c(
+    "SV01_504887537", "SV05_83807981",  "SV07_374076699",
+    "SJ07_471063769", "SJ01_223693185", "SJ01_285040967",
+    "SS01_212548100", "SV01_522436644", "SV03_332992142",
+    "SJ05_446284944"
+  ),
+  BioClim_vars = c(
+    "wc2.1_30s_bio_4,wc2.1_30s_bio_7",
+    "wc2.1_30s_bio_4",
+    "wc2.1_30s_bio_9",
+    "wc2.1_30s_bio_14,wc2.1_30s_bio_17",
+    "wc2.1_30s_bio_15",
+    "wc2.1_30s_bio_4,wc2.1_30s_bio_7",
+    "wc2.1_30s_bio_15",
+    "wc2.1_30s_bio_4,wc2.1_30s_bio_15",
+    "wc2.1_30s_bio_3",
+    "wc2.1_30s_bio_14,wc2.1_30s_bio_17"
+  )
+)
+
+sig_snps <- snp_bioclim$SNP
+
+# ----------------------------------------------------------
+# 2. Read VCF and subset to sig SNPs
+# ----------------------------------------------------------
+vcf <- read.vcfR(vcf_path, verbose = TRUE)
+
+fixed_df <- as.data.frame(getFIX(vcf), stringsAsFactors = FALSE) %>%
+  mutate(SNP_ID = if_else(!is.na(ID) & ID != ".", ID,
+                           paste0(CHROM, "_", POS)))
+
+snp_idx <- which(fixed_df$SNP_ID %in% sig_snps)
+
+if (length(snp_idx) == 0) {
+  snp_pos <- str_extract(sig_snps, "(?<=_)\\d+$")
+  snp_idx <- which(fixed_df$POS %in% snp_pos)
+  message("Matched ", length(snp_idx), " SNPs by position fallback.")
+}
+
+stopifnot("No sig SNPs found — check SNP ID format in VCF" = length(snp_idx) > 0)
+
+vcf_sub   <- vcf[snp_idx, ]
+fixed_sub <- fixed_df[snp_idx, ]
+
+# ----------------------------------------------------------
+# 3. Convert GT codes to nucleotides
+# ----------------------------------------------------------
+gt_matrix <- extract.gt(vcf_sub, element = "GT", as.numeric = FALSE)
+
+allele_list <- lapply(seq_len(nrow(gt_matrix)), function(i) {
+  ref         <- fixed_sub$REF[i]
+  alt_alleles <- str_split(fixed_sub$ALT[i], ",")[[1]]
+  all_alleles <- c(ref, alt_alleles)
+
+  sapply(gt_matrix[i, ], function(gt) {
+    if (is.na(gt) || gt %in% c("./.", ".|.")) return(NA_character_)
+    codes <- as.integer(str_split(gt, "[/|]")[[1]])
+    nucs  <- all_alleles[codes + 1]
+    paste(sort(unique(nucs)), collapse = "/")
+  })
+})
+
+allele_df           <- as.data.frame(do.call(rbind, allele_list))
+rownames(allele_df) <- fixed_sub$SNP_ID
+colnames(allele_df) <- colnames(gt_matrix)
+
+# ----------------------------------------------------------
+# 4. Write wide allele state table
+# ----------------------------------------------------------
+allele_wide <- allele_df %>%
+  rownames_to_column("SNP") %>%
+  left_join(snp_bioclim, by = "SNP") %>%
+  relocate(BioClim_vars, .after = SNP)
+
+write.csv(allele_wide,
+          file.path(out_dir, "allele_states.csv"),
+          row.names = FALSE)
+
+message("allele_states.csv written: ", nrow(allele_wide), " SNPs x ",
+        ncol(allele_wide) - 2, " individuals")
+
+# ----------------------------------------------------------
+# 5. Read BioClim CSV
+# ----------------------------------------------------------
+bioclim <- read.csv(bioclim_path, check.names = FALSE)
+
+bioclim_long <- bioclim %>%
+  rename(accession = PI_Accession) %>%
+  select(accession, starts_with("wc2.1_30s_bio_")) %>%
+  pivot_longer(
+    cols      = starts_with("wc2.1_30s_bio_"),
+    names_to  = "bioclim_var",
+    values_to = "bioclim_value"
+  )
+
+# ----------------------------------------------------------
+# 6. Build long-format master table
+# ----------------------------------------------------------
+allele_long <- allele_df %>%
+  rownames_to_column("SNP") %>%
+  pivot_longer(-SNP, names_to = "accession", values_to = "allele") %>%
+  filter(!is.na(allele))
+
+snp_bioclim_long <- snp_bioclim %>%
+  separate_rows(BioClim_vars, sep = ",") %>%
+  rename(bioclim_var = BioClim_vars) %>%
+  mutate(bioclim_var = str_trim(bioclim_var))
+
+combined <- allele_long %>%
+  inner_join(snp_bioclim_long, by = "SNP", relationship = "many-to-many") %>%
+  inner_join(bioclim_long,     by = c("accession", "bioclim_var")) %>%
+  mutate(
+    bio_label = str_replace(bioclim_var, "wc2.1_30s_bio_(\\d+)", "BIO\\1"),
+    SNP_label = paste0(SNP, "\n(", bio_label, ")")
+  )
+
+write.csv(combined %>% select(-SNP_label, -bio_label),
+          file.path(out_dir, "allele_bioclim_long.csv"),
+          row.names = FALSE)
+
+message("allele_bioclim_long.csv written: ", nrow(combined), " rows")
+
+# ----------------------------------------------------------
+# 7. Allele summary table
+# ----------------------------------------------------------
+allele_summary <- combined %>%
+  group_by(SNP, bioclim_var, allele) %>%
+  summarise(
+    n      = n(),
+    median = median(bioclim_value, na.rm = TRUE),
+    mean   = mean(bioclim_value,   na.rm = TRUE),
+    sd     = sd(bioclim_value,     na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(SNP, bioclim_var, desc(median))
+
+write.csv(allele_summary,
+          file.path(out_dir, "allele_summary_sorted.csv"),
+          row.names = FALSE)
+
+message("allele_summary_sorted.csv written")
+
+# ----------------------------------------------------------
+# 8. Individual boxplots — one PNG per SNP x BioClim combo
+# ----------------------------------------------------------
+plot_dir <- file.path(out_dir, "SNP_boxplots")
+dir.create(plot_dir, showWarnings = FALSE)
+
+bioclim_ylabs <- c(
+  "wc2.1_30s_bio_3"  = "Isothermality (BIO3, ratio x 100)",
+  "wc2.1_30s_bio_4"  = "Temperature Seasonality (BIO4, SD x 100)",
+  "wc2.1_30s_bio_7"  = "Temperature Annual Range (BIO7, degrees C x 10)",
+  "wc2.1_30s_bio_9"  = "Mean Temp of Driest Quarter (BIO9, degrees C x 10)",
+  "wc2.1_30s_bio_14" = "Precipitation of Driest Month (BIO14, mm)",
+  "wc2.1_30s_bio_15" = "Precipitation Seasonality (BIO15, CV)",
+  "wc2.1_30s_bio_17" = "Precipitation of Driest Quarter (BIO17, mm)"
+)
+
+snp_combos <- combined %>%
+  distinct(SNP, bioclim_var, SNP_label, bio_label)
+
+for (i in seq_len(nrow(snp_combos))) {
+
+  snp_i       <- snp_combos$SNP[i]
+  bioclim_i   <- snp_combos$bioclim_var[i]
+  bio_label_i <- snp_combos$bio_label[i]
+  ylab_i      <- bioclim_ylabs[bioclim_i]
+
+  plot_data <- combined %>%
+    filter(SNP == snp_i, bioclim_var == bioclim_i)
+
+  n_lab <- plot_data %>%
+    group_by(allele) %>%
+    summarise(n = n(), y_pos = min(bioclim_value, na.rm = TRUE), .groups = "drop") %>%
+    mutate(label = paste0("n=", n))
+
+  p_i <- ggplot(plot_data,
+                aes(x = allele, y = bioclim_value, fill = allele)) +
+    geom_boxplot(outlier.size  = 0.8,
+                 outlier.alpha = 0.5,
+                 width         = 0.55) +
+    geom_jitter(width = 0.15, size = 0.8, alpha = 0.4, color = "gray25") +
+    geom_text(data = n_lab,
+              aes(x = allele, y = y_pos, label = label),
+              vjust = 1.4, size = 3, inherit.aes = FALSE) +
+    scale_x_discrete(drop = TRUE) +
+    scale_fill_brewer(palette = "Set2") +
+    labs(
+      title    = paste0(snp_i, " — ", bio_label_i),
+      subtitle = "IWG diversity panel",
+      x        = "Allele",
+      y        = ylab_i
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      legend.position  = "none",
+      panel.grid.minor = element_blank(),
+      axis.title.y     = element_text(size = 10)
+    )
+
+  filename_i <- paste0(snp_i, "_", bio_label_i, ".png")
+
+  ggsave(
+    filename = file.path(plot_dir, filename_i),
+    plot     = p_i,
+    width    = 5,
+    height   = 4.5,
+    dpi      = 300,
+    device   = "png"
+  )
+
+  message("Saved: ", filename_i)
+}
+
+message("All individual SNP plots saved to: ", plot_dir)
+
+# ----------------------------------------------------------
+# 9. Supplemental accession tables — one CSV per SNP
+# ----------------------------------------------------------
+supp_dir <- file.path(out_dir, "Supplemental_Accession_Tables")
+dir.create(supp_dir, showWarnings = FALSE)
+
+for (snp_i in unique(combined$SNP)) {
+
+  supp_data <- combined %>%
+    filter(SNP == snp_i) %>%
+    select(accession, SNP, allele, bioclim_var, bioclim_value) %>%
+    mutate(bioclim_var = str_replace(bioclim_var,
+                                     "wc2.1_30s_bio_(\\d+)", "BIO\\1")) %>%
+    pivot_wider(names_from  = bioclim_var,
+                values_from = bioclim_value) %>%
+    arrange(allele, accession)
+
+  write.csv(supp_data,
+            file.path(supp_dir, paste0("Supp_accessions_", snp_i, ".csv")),
+            row.names = FALSE)
+
+  message("Saved supplemental table for: ", snp_i)
+}
+
+message("All done. Outputs written to: ", out_dir)
+```
+

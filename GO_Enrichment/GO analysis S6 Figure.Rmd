@@ -1,0 +1,378 @@
+---
+title: "GO analysis Supp table"
+author: "Elizabeth Campbell"
+date: "2026-01-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# FIXED SCRIPT - Handles Different Column Name Formats
+# This version automatically detects your column names
+
+################################################################################
+# SETUP
+################################################################################
+
+library(dplyr)
+
+# Set working directory (UPDATE THIS to your folder)
+setwd("C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Analysis_Outputs_and_Visualizations/Gene Ontology/GO_Analysis_Results")
+
+################################################################################
+# LOAD DATA
+################################################################################
+
+marker_info <- read.csv("marker_information_detailed.csv", stringsAsFactors = FALSE)
+snp_gene_map <- read.csv("SNP_to_gene_mapping.csv", stringsAsFactors = FALSE)
+
+cat("✓ Files loaded!\n")
+cat("Marker info rows:", nrow(marker_info), "\n")
+cat("SNP mapping rows:", nrow(snp_gene_map), "\n\n")
+
+################################################################################
+# FIX COLUMN NAMES (Handle different formats)
+################################################################################
+
+# Standardize column names to work with script
+# Convert dots to underscores if needed
+colnames(marker_info) <- gsub("\\.", "_", colnames(marker_info))
+colnames(snp_gene_map) <- gsub("\\.", "_", colnames(snp_gene_map))
+
+cat("Column names standardized\n")
+cat("Marker info columns:", paste(colnames(marker_info), collapse = ", "), "\n\n")
+
+################################################################################
+# CREATE TABLE
+################################################################################
+
+# Get genome-wide significant SNPs
+snp_table <- marker_info %>%
+  filter(significant == TRUE) %>%
+  group_by(marker) %>%
+  slice_min(p_value, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  left_join(
+    snp_gene_map %>%
+      group_by(marker) %>%
+      summarize(genes = paste(sort(unique(gene_id)), collapse = ", "), .groups = "drop"),
+    by = "marker"
+  ) %>%
+  mutate(
+    Chr = sprintf("%02d", as.numeric(gsub("^[A-Z]+", "", chromosome))),
+    Position = format(position, big.mark = ",", scientific = FALSE),
+    Trait = trait_name,
+    `P-value` = sprintf("%.2e", p_value),
+    Genes = ifelse(is.na(genes) | genes == "", "None (gene desert)", genes),
+    Category = ifelse(as.numeric(gsub("BIO_", "", trait_name)) <= 11, "Temperature", "Precipitation")
+  ) %>%
+  select(SNP = marker, Chr, Position, Trait, `P-value`, Genes, Category) %>%
+  arrange(`P-value`)
+
+################################################################################
+# DISPLAY TABLE
+################################################################################
+
+cat("========================================\n")
+cat("GENOME-WIDE SIGNIFICANT SNPs\n")
+cat("========================================\n\n")
+print(snp_table)
+
+################################################################################
+# SAVE TABLES
+################################################################################
+
+# Save complete table
+write.csv(snp_table, "Table_GenomeWide_SNPs.csv", row.names = FALSE)
+cat("\n✓ Saved: Table_GenomeWide_SNPs.csv\n")
+
+# Save as tab-delimited
+write.table(snp_table, "Table_GenomeWide_SNPs.txt",
+            sep = "\t", row.names = FALSE, quote = FALSE)
+cat("✓ Saved: Table_GenomeWide_SNPs.txt\n")
+
+# Temperature table
+temp_table <- snp_table %>% filter(Category == "Temperature") %>% select(-Category)
+write.csv(temp_table, "Table_Temperature_SNPs.csv", row.names = FALSE)
+cat("✓ Saved: Table_Temperature_SNPs.csv\n")
+
+# Precipitation table
+precip_table <- snp_table %>% filter(Category == "Precipitation") %>% select(-Category)
+write.csv(precip_table, "Table_Precipitation_SNPs.csv", row.names = FALSE)
+cat("✓ Saved: Table_Precipitation_SNPs.csv\n")
+
+################################################################################
+# PRINT BY CATEGORY
+################################################################################
+
+cat("\n========================================\n")
+cat("TEMPERATURE-ASSOCIATED SNPs\n")
+cat("========================================\n")
+print(temp_table, row.names = FALSE)
+
+cat("\n========================================\n")
+cat("PRECIPITATION-ASSOCIATED SNPs\n")
+cat("========================================\n")
+print(precip_table, row.names = FALSE)
+
+################################################################################
+# SUMMARY
+################################################################################
+
+cat("\n========================================\n")
+cat("SUMMARY\n")
+cat("========================================\n")
+cat("Total SNPs:", nrow(snp_table), "\n")
+cat("SNPs with genes:", sum(!grepl("None", snp_table$Genes)), "\n")
+cat("Gene deserts:", sum(grepl("None", snp_table$Genes)), "\n")
+cat("Unique genes:", 
+    length(unique(unlist(strsplit(snp_table$Genes[!grepl("None", snp_table$Genes)], ", ")))), "\n")
+cat("Temperature SNPs:", sum(snp_table$Category == "Temperature"), "\n")
+cat("Precipitation SNPs:", sum(snp_table$Category == "Precipitation"), "\n")
+
+cat("\n✓✓✓ SUCCESS! Tables created in:\n")
+cat(getwd(), "\n")
+
+################################################################################
+# END
+################################################################################
+```
+
+******Supplemental Image**********
+```{r}
+# Publication-Ready GO Enrichment Figure
+# Focuses on Temperature (BIO4) vs Precipitation (BIO15) contrast
+
+################################################################################
+# SETUP
+################################################################################
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Set working directory
+setwd("C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Analysis_Outputs_and_Visualizations/Gene Ontology/GO_Analysis_Results")
+
+################################################################################
+# OPTION 1: Temperature Group vs Precipitation Group (RECOMMENDED)
+################################################################################
+
+# Load your GO enrichment results
+temp_go <- read.csv("GO_enrichment_temperature_group.csv")
+precip_go <- read.csv("GO_enrichment_precipitation_group.csv")
+
+# Select top terms by FDR (most significant)
+top_temp <- temp_go %>%
+  filter(FDR < 0.05) %>%
+  arrange(FDR) %>%
+  head(10) %>%
+  mutate(
+    Category = "Temperature-Associated",
+    neg_log10_FDR = -log10(FDR)
+  )
+
+top_precip <- precip_go %>%
+  filter(FDR < 0.05) %>%
+  arrange(FDR) %>%
+  head(10) %>%
+  mutate(
+    Category = "Precipitation-Associated",
+    neg_log10_FDR = -log10(FDR)
+  )
+
+# Combine
+plot_data <- bind_rows(top_temp, top_precip) %>%
+  mutate(
+    # Clean up term names (remove "GO:XXXXXXX" if present)
+    Term_clean = gsub("GO:[0-9]+\\s*", "", Term),
+    # Shorten long terms
+    Term_clean = ifelse(nchar(Term_clean) > 50, 
+                        paste0(substr(Term_clean, 1, 47), "..."), 
+                        Term_clean)
+  )
+
+# Create figure
+p1 <- ggplot(plot_data, aes(x = neg_log10_FDR, y = reorder(Term_clean, neg_log10_FDR), 
+                             fill = Category)) +
+  geom_col() +
+  facet_wrap(~Category, scales = "free_y", ncol = 2) +
+  scale_fill_manual(values = c("Temperature-Associated" = "#D55E00",
+                               "Precipitation-Associated" = "#0072B2")) +
+  labs(
+    x = "-log10(FDR)",
+    y = "",
+    title = "Enriched Gene Ontology Terms in Climate-Associated Genes"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold", size = 11),
+    strip.background = element_rect(fill = "grey90", color = NA),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(face = "bold", size = 13)
+  ) +
+  geom_vline(xintercept = -log10(0.05), linetype = "dashed", 
+             color = "grey50", size = 0.5)
+
+# Save figure
+ggsave("Figure_GO_Enrichment_Clean.png", p1, 
+       width = 10, height = 6, dpi = 600, bg = "white")
+ggsave("Figure_GO_Enrichment_Clean.pdf", p1, 
+       width = 10, height = 6, bg = "white")
+
+cat("✓ Saved: Figure_GO_Enrichment_Clean.png\n")
+cat("✓ Saved: Figure_GO_Enrichment_Clean.pdf\n")
+
+################################################################################
+# OPTION 2: Single Panel with Categories (More Compact)
+################################################################################
+
+# Order by category and FDR
+plot_data2 <- plot_data %>%
+  arrange(Category, FDR) %>%
+  mutate(
+    Term_ordered = factor(Term_clean, levels = unique(Term_clean))
+  )
+
+p2 <- ggplot(plot_data2, aes(x = neg_log10_FDR, y = Term_ordered, fill = Category)) +
+  geom_col() +
+  scale_fill_manual(
+    values = c("Temperature-Associated" = "#D55E00",
+               "Precipitation-Associated" = "#0072B2"),
+    name = ""
+  ) +
+  labs(
+    x = "-log10(FDR)",
+    y = "",
+    title = "Enriched Gene Ontology Terms"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(face = "bold", size = 13),
+    legend.text = element_text(size = 11)
+  ) +
+  geom_vline(xintercept = -log10(0.05), linetype = "dashed", 
+             color = "grey50", size = 0.5)
+
+ggsave("Figure_GO_Enrichment_Single.png", p2, 
+       width = 8, height = 7, dpi = 600, bg = "white")
+ggsave("Figure_GO_Enrichment_Single.pdf", p2, 
+       width = 8, height = 7, bg = "white")
+
+cat("✓ Saved: Figure_GO_Enrichment_Single.png\n")
+cat("✓ Saved: Figure_GO_Enrichment_Single.pdf\n")
+
+################################################################################
+# OPTION 3: Show Gene Counts (More Informative)
+################################################################################
+
+# Add gene ratio for better context
+plot_data3 <- bind_rows(top_temp, top_precip) %>%
+  mutate(
+    Term_clean = gsub("GO:[0-9]+\\s*", "", Term),
+    Term_clean = ifelse(nchar(Term_clean) > 45, 
+                        paste0(substr(Term_clean, 1, 42), "..."), 
+                        Term_clean),
+    Gene_ratio = Significant / Annotated,
+    Label = sprintf("%d/%d", Significant, Annotated)
+  )
+
+p3 <- ggplot(plot_data3, aes(x = neg_log10_FDR, y = reorder(Term_clean, neg_log10_FDR))) +
+  geom_col(aes(fill = Category)) +
+  geom_text(aes(label = Label), hjust = -0.1, size = 3) +
+  facet_wrap(~Category, scales = "free_y", ncol = 2) +
+  scale_fill_manual(values = c("Temperature-Associated" = "#D55E00",
+                               "Precipitation-Associated" = "#0072B2")) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    x = "-log10(FDR)",
+    y = "",
+    title = "Enriched Gene Ontology Terms",
+    subtitle = "Numbers show candidate genes / total annotated genes"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold", size = 11),
+    strip.background = element_rect(fill = "grey90", color = NA),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 9),
+    plot.title = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(size = 10, color = "grey30")
+  )
+
+ggsave("Figure_GO_Enrichment_WithCounts.png", p3, 
+       width = 11, height = 6, dpi = 600, bg = "white")
+ggsave("Figure_GO_Enrichment_WithCounts.pdf", p3, 
+       width = 11, height = 6, bg = "white")
+
+cat("✓ Saved: Figure_GO_Enrichment_WithCounts.png\n")
+cat("✓ Saved: Figure_GO_Enrichment_WithCounts.pdf\n")
+
+################################################################################
+# OPTION 4: Dot Plot (Elegant Alternative)
+################################################################################
+
+p4 <- ggplot(plot_data3, aes(x = neg_log10_FDR, y = reorder(Term_clean, neg_log10_FDR))) +
+  geom_point(aes(size = Significant, fill = Category), 
+             shape = 21, color = "black", stroke = 0.5) +
+  facet_wrap(~Category, scales = "free_y", ncol = 2) +
+  scale_fill_manual(values = c("Temperature-Associated" = "#D55E00",
+                               "Precipitation-Associated" = "#0072B2")) +
+  scale_size_continuous(name = "Gene count", range = c(2, 10)) +
+  labs(
+    x = "-log10(FDR)",
+    y = "",
+    title = "Enriched Gene Ontology Terms"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold", size = 11),
+    strip.background = element_rect(fill = "grey90", color = NA),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(face = "bold", size = 13)
+  )
+
+ggsave("Figure_GO_Enrichment_DotPlot.png", p4, 
+       width = 10, height = 6, dpi = 600, bg = "white")
+ggsave("Figure_GO_Enrichment_DotPlot.pdf", p4, 
+       width = 10, height = 6, bg = "white")
+
+cat("✓ Saved: Figure_GO_Enrichment_DotPlot.png\n")
+cat("✓ Saved: Figure_GO_Enrichment_DotPlot.pdf\n")
+
+################################################################################
+# SUMMARY
+################################################################################
+
+cat("\n========================================\n")
+cat("CREATED 4 FIGURE OPTIONS:\n")
+cat("========================================\n")
+cat("1. Figure_GO_Enrichment_Clean.png - Two-panel bar chart (RECOMMENDED)\n")
+cat("2. Figure_GO_Enrichment_Single.png - Single panel, color-coded\n")
+cat("3. Figure_GO_Enrichment_WithCounts.png - With gene counts labeled\n")
+cat("4. Figure_GO_Enrichment_DotPlot.png - Elegant dot plot\n\n")
+
+cat("RECOMMENDATION: Use Option 1 (Clean) or Option 3 (WithCounts)\n")
+cat("These clearly show the contrast between hormone signaling (temperature)\n")
+cat("and chromatin remodeling (precipitation)\n")
+
+################################################################################
+# END
+################################################################################
+```
+

@@ -1,0 +1,359 @@
+---
+title: "ANCOVA analysis"
+author: "Elizabeth Campbell"
+date: "2025-12-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+`
+```{r}
+#===============================================================================
+# Genotype × Population Interaction Analysis (ANCOVA)
+# Testing for Population-Specific vs. Parallel Climate Adaptation
+#
+# Author: Elizabeth Campbell
+# Affiliation: Department of Tropical Plant and Soil Sciences,
+#              University of Hawaii at Manoa
+# Date: December 2025
+#
+# Description: Tests whether climate-associated SNPs show consistent effects
+#              across populations (parallel adaptation) or population-specific
+#              effects (divergent adaptation) using ANCOVA with genotype × 
+#              population interaction terms. Uses FDR correction (q < 0.05).
+#
+# Key Finding: 75.8% of candidate SNPs show parallel adaptation (universal
+#              effects), while 24.2% show population-specific effects.
+#
+# References:
+#   - Benjamini & Hochberg (1995) FDR correction
+#   - Type II ANOVA for unbalanced designs (Fox & Weisberg 2019)
+#===============================================================================
+
+library(dplyr)
+library(tidyr)
+library(car)      # For Type II ANOVA
+library(ggplot2)
+
+#===============================================================================
+# SETUP
+#===============================================================================
+
+# File paths
+BASE_DIR <- "C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2"
+GWAS_DIR <- file.path(BASE_DIR, "Analysis_Outputs_and_Visualizations/GWAS")
+DATA_DIR <- file.path(BASE_DIR, "Processed_Data")
+PHENO_DIR <- file.path(BASE_DIR, "Phenotype_and_Ecographic_Data")
+OUTPUT_DIR <- file.path(BASE_DIR, "Analysis_Outputs_and_Visualizations/ANCOVA")
+
+dir.create(OUTPUT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+# Significance threshold
+SUGGESTIVE_THRESHOLD <- 5e-5  # Candidate SNPs from GWAS
+
+cat("================================================================================\n")
+cat("ANCOVA ANALYSIS - Population-Specific Climate Adaptation\n")
+cat("================================================================================\n\n")
+
+#===============================================================================
+# STEP 1: Extract Candidate SNP-Climate Combinations from GWAS
+#===============================================================================
+
+cat("Step 1: Extracting Q+K model significant combinations (p < 5e-5)...\n")
+
+gwas_files <- list.files(GWAS_DIR, pattern = "gwas_four_models_bio.*\\.csv", 
+                         full.names = TRUE)
+
+if (length(gwas_files) == 0) {
+  stop("ERROR: No GWAS files found. Check GWAS_DIR path.")
+}
+
+cat("  Found", length(gwas_files), "GWAS files\n")
+
+# Extract Q+K model significant combinations
+qk_significant <- data.frame()
+
+for (file in gwas_files) {
+  bio_num <- gsub(".*bio(\\d+)\\.csv", "\\1", basename(file))
+  bio_var <- paste0("wc2.1_30s_bio_", bio_num)
+  
+  gwas_data <- read.csv(file)
+  
+  qk_sig <- gwas_data %>%
+    filter(model == "Q+K" & p_value < SUGGESTIVE_THRESHOLD) %>%
+    select(marker, p_value) %>%
+    mutate(bio_var = bio_var)
+  
+  qk_significant <- rbind(qk_significant, qk_sig)
+}
+
+qk_significant <- qk_significant %>% distinct(marker, bio_var, .keep_all = TRUE)
+
+cat(sprintf("  Found %d SNP-climate combinations\n", nrow(qk_significant)))
+cat(sprintf("  Unique SNPs: %d\n", length(unique(qk_significant$marker))))
+cat(sprintf("  Unique climate variables: %d\n\n", length(unique(qk_significant$bio_var))))
+
+#===============================================================================
+# STEP 2: Load Data
+#===============================================================================
+
+cat("Step 2: Loading genotype, phenotype, and population data...\n")
+
+# Genotype (tab-separated, skip first row)
+genotype <- read.table(file.path(DATA_DIR, "IWG_numeric_genotype.txt"), 
+                       sep = "\t", header = TRUE, skip = 1, 
+                       check.names = FALSE, na.strings = c("NA", "N"))
+colnames(genotype)[1] <- "taxa"
+
+# Phenotype (tab-separated, skip first 2 rows)
+phenotype <- read.table(file.path(PHENO_DIR, "IWG_PI_Phenotype (1).txt"), 
+                        sep = "\t", header = TRUE, skip = 2, check.names = FALSE)
+colnames(phenotype)[1] <- "taxa"
+
+# Population clusters
+pca_clusters <- read.csv(file.path(PHENO_DIR, "IWG_pca_clusters_k6.csv"))
+colnames(pca_clusters)[1] <- "taxa"
+
+cat(sprintf("  Genotype: %d samples x %d SNPs\n", nrow(genotype), ncol(genotype)-1))
+cat(sprintf("  Phenotype: %d samples x %d variables\n", nrow(phenotype), ncol(phenotype)-3))
+cat(sprintf("  Populations: %d samples\n\n", nrow(pca_clusters)))
+
+#===============================================================================
+# STEP 3: Prepare Dataset
+#===============================================================================
+
+cat("Step 3: Merging data...\n")
+
+# Climate variable metadata
+bio_info <- data.frame(
+  bio_var = paste0("wc2.1_30s_bio_", 1:19),
+  bio_name = c("Annual Mean Temp", "Mean Diurnal Range", "Isothermality", 
+               "Temp Seasonality", "Max Temp Warmest Month", "Min Temp Coldest Month",
+               "Temp Annual Range", "Mean Temp Wettest Quarter", "Mean Temp Driest Quarter",
+               "Mean Temp Warmest Quarter", "Mean Temp Coldest Quarter", "Annual Precip",
+               "Precip Wettest Month", "Precip Driest Month", "Precip Seasonality",
+               "Precip Wettest Quarter", "Precip Driest Quarter", "Precip Warmest Quarter",
+               "Precip Coldest Quarter"),
+  category = c(rep("Temperature", 11), rep("Precipitation", 8))
+)
+
+# Merge datasets
+individual_data <- genotype %>%
+  left_join(phenotype, by = "taxa") %>%
+  left_join(pca_clusters, by = "taxa") %>%
+  mutate(Cluster = factor(Cluster))
+
+cat(sprintf("  Combined: %d individuals, %d populations\n\n", 
+            nrow(individual_data), 
+            length(levels(individual_data$Cluster))))
+
+#===============================================================================
+# STEP 4: ANCOVA Function
+#===============================================================================
+
+run_ancova <- function(data, snp, bio_var) {
+  
+  test_data <- data %>%
+    select(taxa, Cluster, all_of(snp), all_of(bio_var)) %>%
+    rename(genotype = !!snp, climate = !!bio_var) %>%
+    filter(!is.na(genotype) & !is.na(climate)) %>%
+    mutate(genotype = factor(genotype), Cluster = factor(Cluster))
+  
+  # Need sufficient data
+  if (length(unique(test_data$Cluster)) < 2 || 
+      length(unique(test_data$genotype)) < 2 || 
+      nrow(test_data) < 10) {
+    return(NULL)
+  }
+  
+  # ANCOVA: climate ~ Population + Genotype + Population×Genotype
+  tryCatch({
+    model <- lm(climate ~ Cluster + genotype + Cluster:genotype, data = test_data)
+    anova_result <- Anova(model, type = "II")
+    
+    data.frame(
+      marker = snp,
+      bio_var = bio_var,
+      n = nrow(test_data),
+      n_populations = length(unique(test_data$Cluster)),
+      n_genotypes = length(unique(test_data$genotype)),
+      population_F = anova_result["Cluster", "F value"],
+      population_p = anova_result["Cluster", "Pr(>F)"],
+      genotype_F = anova_result["genotype", "F value"],
+      genotype_p = anova_result["genotype", "Pr(>F)"],
+      interaction_F = anova_result["Cluster:genotype", "F value"],
+      interaction_p = anova_result["Cluster:genotype", "Pr(>F)"],
+      model_r2 = summary(model)$r.squared,
+      adj_r2 = summary(model)$adj.r.squared
+    )
+  }, error = function(e) NULL)
+}
+
+#===============================================================================
+# STEP 5: Run ANCOVA for All Combinations
+#===============================================================================
+
+cat("Step 4: Running ANCOVA tests...\n")
+
+ancova_results <- list()
+
+for (i in 1:nrow(qk_significant)) {
+  result <- run_ancova(individual_data, 
+                       qk_significant$marker[i], 
+                       qk_significant$bio_var[i])
+  if (!is.null(result)) {
+    ancova_results[[length(ancova_results) + 1]] <- result
+  }
+  
+  if (i %% 10 == 0) cat("  Completed", i, "tests\n")
+}
+
+ancova_df <- bind_rows(ancova_results)
+cat(sprintf("\n  Completed %d ANCOVA tests\n\n", nrow(ancova_df)))
+
+#===============================================================================
+# STEP 6: FDR Correction
+#===============================================================================
+
+cat("Step 5: Applying FDR correction...\n")
+
+ancova_df <- ancova_df %>%
+  mutate(
+    population_q = p.adjust(population_p, method = "fdr"),
+    genotype_q = p.adjust(genotype_p, method = "fdr"),
+    interaction_q = p.adjust(interaction_p, method = "fdr"),
+    significant_population = population_q < 0.05,
+    significant_genotype = genotype_q < 0.05,
+    significant_interaction = interaction_q < 0.05
+  ) %>%
+  left_join(bio_info, by = "bio_var")
+
+#===============================================================================
+# STEP 7: Summary Statistics
+#===============================================================================
+
+cat("\n================================================================================\n")
+cat("RESULTS SUMMARY (FDR q < 0.05)\n")
+cat("================================================================================\n\n")
+
+cat("Overall:\n")
+cat(sprintf("  Total tests: %d\n", nrow(ancova_df)))
+cat(sprintf("  Significant population effects: %d (%.1f%%)\n",
+            sum(ancova_df$significant_population),
+            100 * mean(ancova_df$significant_population)))
+cat(sprintf("  Significant genotype effects: %d (%.1f%%)\n",
+            sum(ancova_df$significant_genotype),
+            100 * mean(ancova_df$significant_genotype)))
+cat(sprintf("  Significant G×P interactions: %d (%.1f%%)\n\n",
+            sum(ancova_df$significant_interaction),
+            100 * mean(ancova_df$significant_interaction)))
+
+# By category
+cat("By climate category:\n")
+by_category <- ancova_df %>%
+  group_by(category) %>%
+  summarize(
+    n_tests = n(),
+    n_sig_interactions = sum(significant_interaction),
+    pct_sig = 100 * n_sig_interactions / n_tests,
+    .groups = "drop"
+  )
+print(by_category)
+
+# Parallel vs divergent
+cat("\n")
+cat("Adaptation pattern:\n")
+cat(sprintf("  Parallel (no G×P interaction): %.1f%%\n",
+            100 * (1 - mean(ancova_df$significant_interaction))))
+cat(sprintf("  Divergent (significant G×P interaction): %.1f%%\n\n",
+            100 * mean(ancova_df$significant_interaction)))
+
+#===============================================================================
+# STEP 8: Save Results
+#===============================================================================
+
+cat("Saving results...\n")
+
+write.csv(ancova_df, 
+          file.path(OUTPUT_DIR, "ancova_full_results.csv"), 
+          row.names = FALSE)
+
+sig_interactions <- ancova_df %>%
+  filter(significant_interaction) %>%
+  arrange(interaction_q)
+
+write.csv(sig_interactions, 
+          file.path(OUTPUT_DIR, "ancova_significant_interactions.csv"), 
+          row.names = FALSE)
+
+cat(sprintf("  Saved full results (%d tests)\n", nrow(ancova_df)))
+cat(sprintf("  Saved significant interactions (%d)\n\n", nrow(sig_interactions)))
+
+# Top interactions
+if (nrow(sig_interactions) > 0) {
+  cat("Top 10 significant interactions:\n")
+  print(sig_interactions %>%
+          head(10) %>%
+          select(marker, bio_name, interaction_F, interaction_q, adj_r2))
+}
+
+#===============================================================================
+# STEP 9: Visualizations
+#===============================================================================
+
+cat("\nCreating visualizations...\n")
+
+# Significant effects
+sig_counts <- data.frame(
+  Effect = c("Population", "Genotype", "G×P Interaction"),
+  Count = c(sum(ancova_df$significant_population),
+            sum(ancova_df$significant_genotype),
+            sum(ancova_df$significant_interaction))
+)
+
+p1 <- ggplot(sig_counts, aes(x = Effect, y = Count, fill = Effect)) +
+  geom_col() +
+  geom_text(aes(label = Count), vjust = -0.5, size = 5) +
+  scale_fill_manual(values = c("#d32f2f", "#1976d2", "#757575")) +
+  labs(title = "Significant ANCOVA Effects (FDR < 0.05)",
+       y = "Number of Tests") +
+  theme_minimal() +
+  theme(legend.position = "none", text = element_text(size = 12))
+
+ggsave(file.path(OUTPUT_DIR, "ancova_effects.png"), p1, 
+       width = 8, height = 6, dpi = 300)
+
+# Interaction strength by category
+p2 <- ggplot(ancova_df, aes(x = category, y = interaction_F, fill = category)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("#ef5350", "#42a5f5")) +
+  labs(title = "G×P Interaction Strength by Climate Type",
+       x = "Climate Category", y = "Interaction F-statistic") +
+  theme_minimal() +
+  theme(legend.position = "none", text = element_text(size = 12))
+
+ggsave(file.path(OUTPUT_DIR, "ancova_interaction_by_category.png"), p2, 
+       width = 8, height = 6, dpi = 300)
+
+cat("  Saved visualizations\n")
+
+#===============================================================================
+# COMPLETE
+#===============================================================================
+
+cat("\n================================================================================\n")
+cat("ANALYSIS COMPLETE\n")
+cat("================================================================================\n\n")
+cat("Results saved to:", OUTPUT_DIR, "\n")
+cat(sprintf("\nKey finding: %.1f%% parallel adaptation, %.1f%% divergent\n\n",
+            100 * (1 - mean(ancova_df$significant_interaction)),
+            100 * mean(ancova_df$significant_interaction)))
+
+#===============================================================================
+# END
+#===============================================================================
+```
+

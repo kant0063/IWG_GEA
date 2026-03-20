@@ -1,0 +1,79 @@
+---
+title: "Figure5_IWG"
+author: "Elizabeth Campbell"
+date: "2026-02-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#===============================================================================
+# PANEL C: Geographic Map of Top SNP (FIXED)
+#===============================================================================
+
+cat("Creating Figure 5C (Geographic map)...\n")
+
+top_snp <- bio15_plot %>% slice_min(P, n = 1) %>% pull(SNP)
+cat("  Top SNP:", top_snp, "\n")
+
+# Load genotype - DON'T transpose, it's already samples × SNPs
+M <- fread(file = file.path(GENO_DIR, "IWG_numeric_genotype_3.csv"), 
+           sep = '\t', skip = 1)
+
+# First column is sample IDs, rest are SNP genotypes
+sample_ids <- M[[1]]
+M <- as.matrix(M[, -1])
+rownames(M) <- sample_ids
+
+cat("Matrix dimensions:", nrow(M), "samples ×", ncol(M), "SNPs\n")
+cat("Top SNP exists?", top_snp %in% colnames(M), "\n")
+
+# Load geography
+pheno <- fread(file = file.path(PHENO_DIR, "IWG_bioclim.csv"))
+
+# Clean IDs
+clean <- function(x) tolower(gsub("[^a-z0-9]", "", trimws(as.character(x))))
+rownames(M) <- clean(rownames(M))
+pheno$id <- clean(pheno$PI_Accession)
+
+# Extract genotypes for top SNP
+top_snp_genos <- M[, top_snp]
+names(top_snp_genos) <- rownames(M)
+
+# Merge with geography
+geo <- pheno %>%
+  filter(!is.na(Longitude), !is.na(Latitude)) %>%
+  mutate(
+    genotype = top_snp_genos[id],
+    geno_class = factor(genotype, levels = 0:2, 
+                       labels = c("Ref/Ref (=0)", "Ref/Alt (=1)", "Alt/Alt (=2)"))
+  ) %>%
+  filter(!is.na(genotype))
+
+cat("Samples with genotype data:", nrow(geo), "\n")
+
+# Make map
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+p <- ggplot() +
+  geom_sf(data = world, fill = "tan", color = "gray70", linewidth = 0.2) +
+  coord_sf(xlim = c(-10, 135), ylim = c(25, 65)) +
+  geom_point(data = geo, aes(Longitude, Latitude, fill = geno_class),
+             shape = 21, size = 3, stroke = 0.5, color = "black", alpha = 0.8) +
+  scale_fill_manual(values = c("blue", "yellow", "red"), name = "Genotype") +
+  labs(title = sprintf("%s (p = %.2e)", top_snp, min(bio15_plot$P)),
+       x = "Longitude (°E)", y = "Latitude (°N)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        panel.background = element_rect(fill = "lightblue", color = NA))
+
+ggsave(file.path(OUTPUT_DIR, "Figure_5C_Geographic.png"), p, width = 10, height = 6, dpi = 300)
+
+cat("  Saved: Figure_5C_Geographic.png\n\n")
+cat("DONE!\n")
+```
+
+

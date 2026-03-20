@@ -1,0 +1,180 @@
+
+
+```{r}
+#===============================================================================
+# Interaction Plots: Divergent vs. Parallel Climate Adaptation
+# Intermediate Wheatgrass (Thinopyrum intermedium)
+#
+# Author: Elizabeth Campbell
+# Affiliation: Department of Tropical Plant and Soil Sciences,
+#              University of Hawaii at Manoa
+# Date: 1/9/2026
+#
+# Description: Creates schematic interaction plots illustrating divergent
+#              (population-specific) vs. parallel (universal) adaptation
+#              patterns in climate-associated SNPs.
+#
+# Figure: Shows genotype × population interactions
+#   Panel A: Divergent adaptation (24.2% of associations)
+#   Panel B: Parallel adaptation (75.8% of associations)
+#===============================================================================
+
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+
+# Setup
+BASE_DIR <- "C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2"
+OUTPUT_DIR <- file.path(BASE_DIR, "Analysis_Outputs_and_Visualizations/Figures")
+dir.create(OUTPUT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+set.seed(42)  # Reproducibility
+
+#===============================================================================
+# PANEL A: DIVERGENT ADAPTATION (SJ02_159395471 × BIO13)
+# Most significant G×P interaction (q = 5.2×10⁻⁹, R² = 34.0%)
+#===============================================================================
+
+# Climate range: Precipitation wettest month (50-200 mm)
+climate_range <- seq(50, 200, length.out = 50)
+
+# Six populations with DIFFERENT slopes (divergent)
+populations_div <- list(
+  "Pop 1" = list(slope = 0.0025, intercept = 0.3, color = "#e41a1c"),
+  "Pop 2" = list(slope = 0.0010, intercept = 0.45, color = "#377eb8"),
+  "Pop 3" = list(slope = 0.0035, intercept = 0.2, color = "#4daf4a"),
+  "Pop 4" = list(slope = 0.0015, intercept = 0.5, color = "#984ea3"),
+  "Pop 5" = list(slope = 0.0005, intercept = 0.55, color = "#ff7f00"),
+  "Pop 6" = list(slope = -0.0005, intercept = 0.6, color = "#a65628")
+)
+
+# Generate data
+data_div <- do.call(rbind, lapply(names(populations_div), function(pop) {
+  params <- populations_div[[pop]]
+  freq <- params$slope * climate_range + params$intercept
+  freq <- freq + rnorm(length(climate_range), 0, 0.03)
+  freq <- pmax(0, pmin(1, freq))
+  
+  sample_idx <- sample(1:length(climate_range), 8)
+  
+  data.frame(
+    climate = climate_range,
+    allele_freq = freq,
+    population = pop,
+    color = params$color,
+    is_point = 1:length(climate_range) %in% sample_idx
+  )
+}))
+
+# Plot Panel A
+panel_a <- ggplot(data_div, aes(x = climate, y = allele_freq, color = population)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+  geom_point(data = data_div[data_div$is_point, ], size = 2.5, alpha = 0.6) +
+  scale_color_manual(values = setNames(sapply(populations_div, function(x) x$color), 
+                                       names(populations_div))) +
+  labs(
+    x = "Precipitation Wettest Month (mm)",
+    y = "Allele Frequency",
+    title = "A. Divergent Adaptation: SJ02_159395471",
+    subtitle = expression(paste("Significant G×P interaction (q = 5.2×10"^-9*", R² = 34.0%)"))
+  ) +
+  ylim(-0.05, 1.05) +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position = c(0.15, 0.25),
+    legend.title = element_blank(),
+    legend.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(face = "bold", size = 13, hjust = 0),
+    plot.subtitle = element_text(size = 10, hjust = 0),
+    axis.title = element_text(face = "bold", size = 12),
+    panel.grid.minor = element_blank()
+  ) +
+  annotate("text", x = 180, y = 0.95, 
+           label = "Different slopes indicate\npopulation-specific effects",
+           size = 3.5, hjust = 1)
+
+#===============================================================================
+# PANEL B: PARALLEL ADAPTATION (SS01_212548100 × BIO15)
+# Genome-wide significant (p = 7.6×10⁻⁹, R² = 10.4%), no G×P interaction (q = 0.19)
+#===============================================================================
+
+# Climate range: Precipitation seasonality (30-95% CV)
+climate_range2 <- seq(30, 95, length.out = 50)
+
+# Six populations with SAME slope (parallel)
+populations_par <- list(
+  "Pop 1" = list(slope = 0.0080, intercept = 0.15, color = "#e41a1c"),
+  "Pop 2" = list(slope = 0.0080, intercept = 0.25, color = "#377eb8"),
+  "Pop 3" = list(slope = 0.0080, intercept = 0.10, color = "#4daf4a"),
+  "Pop 4" = list(slope = 0.0080, intercept = 0.35, color = "#984ea3"),
+  "Pop 5" = list(slope = 0.0080, intercept = 0.30, color = "#ff7f00"),
+  "Pop 6" = list(slope = 0.0080, intercept = 0.20, color = "#a65628")
+)
+
+# Generate data
+data_par <- do.call(rbind, lapply(names(populations_par), function(pop) {
+  params <- populations_par[[pop]]
+  freq <- params$slope * climate_range2 + params$intercept
+  freq <- freq + rnorm(length(climate_range2), 0, 0.03)
+  freq <- pmax(0, pmin(1, freq))
+  
+  sample_idx <- sample(1:length(climate_range2), 8)
+  
+  data.frame(
+    climate = climate_range2,
+    allele_freq = freq,
+    population = pop,
+    color = params$color,
+    is_point = 1:length(climate_range2) %in% sample_idx
+  )
+}))
+
+# Plot Panel B
+panel_b <- ggplot(data_par, aes(x = climate, y = allele_freq, color = population)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+  geom_point(data = data_par[data_par$is_point, ], size = 2.5, alpha = 0.6) +
+  scale_color_manual(values = setNames(sapply(populations_par, function(x) x$color), 
+                                       names(populations_par))) +
+  labs(
+    x = "Precipitation Seasonality (Coefficient of Variation, %)",
+    y = "Allele Frequency",
+    title = "B. Parallel Adaptation: SS01_212548100",
+    subtitle = expression(paste("No G×P interaction (q = 0.19), genome-wide sig. (p = 7.6×10"^-9*", R² = 10.4%)"))
+  ) +
+  ylim(-0.05, 1.05) +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position = c(0.15, 0.25),
+    legend.title = element_blank(),
+    legend.background = element_rect(fill = "white", color = "black"),
+    plot.title = element_text(face = "bold", size = 13, hjust = 0),
+    plot.subtitle = element_text(size = 10, hjust = 0),
+    axis.title = element_text(face = "bold", size = 12),
+    panel.grid.minor = element_blank()
+  ) +
+  annotate("text", x = 90, y = 0.25, 
+           label = "Parallel slopes indicate\nuniversal adaptation",
+           size = 3.5, hjust = 1)
+
+#===============================================================================
+# COMBINE AND SAVE
+#===============================================================================
+
+combined_plot <- arrangeGrob(panel_a, panel_b, ncol = 2)
+
+ggsave(file.path(OUTPUT_DIR, "Figure_Interaction_Plots.png"), combined_plot, 
+       width = 14, height = 6, dpi = 300, bg = "white")
+
+ggsave(file.path(OUTPUT_DIR, "Figure_Interaction_Plots.pdf"), combined_plot, 
+       width = 14, height = 6, bg = "white")
+
+cat("\n✓ Interaction plots created successfully!\n")
+cat("  Divergent adaptation: 24.2% (significant G×P interactions)\n")
+cat("  Parallel adaptation: 75.8% (universal effects)\n")
+cat("  Files saved to:", OUTPUT_DIR, "\n\n")
+
+#===============================================================================
+# END
+#===============================================================================
+```
+

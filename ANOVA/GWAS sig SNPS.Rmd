@@ -1,0 +1,146 @@
+---
+title: "Sig GWAS Bonferroni SNPs Checker"
+author: "Elizabeth Campbell"
+date: "2025-12-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+################################################################################
+# IDENTIFY BONFERRONI-SIGNIFICANT SNPs IN ANCOVA RESULTS
+################################################################################
+
+library(dplyr)
+
+# Paths
+GWAS_DIR <- "C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Analysis_Outputs_and_Visualizations/GWAS"
+ANCOVA_FILE <- "C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Analysis_Outputs_and_Visualizations/ANCOVA/ancova_full_results.csv"
+
+# Bonferroni threshold
+bonferroni_threshold <- 2.81e-6
+
+cat("================================================================================\n")
+cat("IDENTIFYING BONFERRONI-SIGNIFICANT SNPs\n")
+cat("================================================================================\n\n")
+
+# Get all GWAS files
+gwas_files <- list.files(GWAS_DIR, pattern = "gwas_four_models_bio.*\\.csv", full.names = TRUE)
+
+# Extract Bonferroni-significant SNPs from Q+K model
+bonferroni_snps <- data.frame()
+
+for (file in gwas_files) {
+  bio_num <- gsub(".*bio(\\d+)\\.csv", "\\1", basename(file))
+  bio_var <- paste0("wc2.1_30s_bio_", bio_num)
+  
+  gwas_data <- read.csv(file)
+  
+  # Filter to Q+K model and Bonferroni threshold
+  bonf_sig <- gwas_data %>%
+    filter(model == "Q+K" & p_value < bonferroni_threshold) %>%
+    dplyr::select(marker, p_value) %>%
+    mutate(bio_var = bio_var)
+  
+  bonferroni_snps <- rbind(bonferroni_snps, bonf_sig)
+}
+
+# Remove duplicates
+bonferroni_snps <- bonferroni_snps %>%
+  distinct(marker, bio_var, .keep_all = TRUE)
+
+cat(sprintf("Bonferroni-significant associations (p < 2.81×10⁻⁶): %d\n", nrow(bonferroni_snps)))
+cat(sprintf("Unique Bonferroni-significant SNPs: %d\n\n", length(unique(bonferroni_snps$marker))))
+
+cat("Bonferroni-significant SNPs:\n")
+bonf_summary <- bonferroni_snps %>%
+  group_by(marker) %>%
+  summarize(
+    n_traits = n(),
+    traits = paste(gsub("wc2.1_30s_bio_", "bio", bio_var), collapse = ", "),
+    min_p = min(p_value)
+  ) %>%
+  arrange(min_p)
+print(bonf_summary)
+
+# Load ANCOVA results
+ancova_results <- read.csv(ANCOVA_FILE)
+
+cat("\n================================================================================\n")
+cat("BONFERRONI SNPs IN ANCOVA RESULTS\n")
+cat("================================================================================\n\n")
+
+# Get unique Bonferroni SNPs
+bonf_snp_list <- unique(bonferroni_snps$marker)
+
+# Check which are in ANCOVA
+ancova_snps <- unique(ancova_results$marker)
+
+bonf_in_ancova <- bonf_snp_list[bonf_snp_list %in% ancova_snps]
+
+cat(sprintf("Bonferroni SNPs tested in ANCOVA: %d of %d\n\n", 
+            length(bonf_in_ancova), length(bonf_snp_list)))
+
+if (length(bonf_in_ancova) > 0) {
+  cat("These Bonferroni SNPs were tested:\n")
+  for (snp in bonf_in_ancova) {
+    # Check if it has significant interaction in ANCOVA
+    snp_results <- ancova_results %>% filter(marker == snp)
+    n_tests <- nrow(snp_results)
+    n_sig_int <- sum(snp_results$significant_interaction, na.rm = TRUE)
+    
+    cat(sprintf("  • %s: %d test(s), %d significant interaction(s)\n", 
+                snp, n_tests, n_sig_int))
+  }
+  
+  # Summary
+  cat("\n================================================================================\n")
+  cat("SUMMARY: BONFERRONI SNPs WITH INTERACTIONS\n")
+  cat("================================================================================\n\n")
+  
+  bonf_with_interactions <- 0
+  for (snp in bonf_in_ancova) {
+    snp_results <- ancova_results %>% filter(marker == snp)
+    if (any(snp_results$significant_interaction, na.rm = TRUE)) {
+      bonf_with_interactions <- bonf_with_interactions + 1
+    }
+  }
+  
+  cat(sprintf("Bonferroni SNPs with at least one significant interaction: %d of %d\n", 
+              bonf_with_interactions, length(bonf_in_ancova)))
+  cat(sprintf("Percentage: %.1f%%\n\n", 100 * bonf_with_interactions / length(bonf_in_ancova)))
+  
+  if (bonf_with_interactions == 9 && length(bonf_in_ancova) == 10) {
+    cat("✓ This matches the claim: '9 of 10 genome-wide significant SNPs'\n")
+  } else {
+    cat(sprintf("⚠️ Claim should be: '%d of %d genome-wide significant SNPs'\n", 
+                bonf_with_interactions, length(bonf_in_ancova)))
+  }
+}
+
+cat("\n")
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

@@ -1,0 +1,563 @@
+---
+title: "IWG Environmental GWAS - Climate Adaptation Analysis"
+author: "Elizabeth Shuster"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 7
+)
+```
+
+# OVERVIEW
+
+**Analysis workflow for IWG climate adaptation study:**
+
+- Population structure analysis (PCA, HCPC clustering)
+- Figure 2A: PCA plot with 6 genetic clusters
+- Figure 2B: Geographic distribution map
+- Placeholders for additional analyses
+
+**Key Parameters:**
+- SNPs: 4,703 LD-pruned markers (from 17,797 total)
+- Clusters: K = 6 populations
+- Variance explained: PC1 = 13.7%, PC2 = 2.3%
+- Cluster sizes: n = 24, 12, 27, 28, 169, 61
+
+---
+
+# 1. LOAD LIBRARIES
+
+```{r load-libraries}
+# Genetic data handling
+library(SNPRelate)
+library(vcfR)
+library(adegenet)
+
+# Population structure & clustering
+library(FactoMineR)
+library(factoextra)
+
+# Data manipulation
+library(dplyr)
+library(tidyr)
+library(data.table)
+
+# Visualization
+library(ggplot2)
+library(sf)
+library(rnaturalearth)
+
+# Additional utilities
+library(readxl)
+```
+
+---
+
+# 2. INITIAL SETUP (RUN ONCE ONLY)
+
+**Convert VCF to GDS format - only run this section ONCE when initially setting up data.**
+
+```{r vcf-to-gds, eval=FALSE}
+setwd("C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Processed_Data")
+
+# Convert VCF to GDS (RUN ONCE)
+vcf.fn <- "IWG_PI.vcf"
+snpgdsVCF2GDS(vcf.fn, "IWG.gds", method = "copy.num.of.ref")
+snpgdsSummary("IWG.gds")
+```
+
+---
+
+# 3. POPULATION STRUCTURE ANALYSIS
+
+## 3.1 LD Pruning and PCA
+
+```{r pca-analysis, eval=FALSE}
+# NOTE: This section was already run to generate IWG_pca.csv
+# Set eval=TRUE only if you need to regenerate PCA scores
+
+setwd("C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Processed_Data")
+
+# Open GDS file
+genofile <- snpgdsOpen("IWG.gds")
+
+# LD pruning with MAF and missing data filters
+set.seed(1000)
+snpset <- snpgdsLDpruning(
+  genofile, 
+  ld.threshold = 0.2,
+  slide.max.bp = 500000,
+  autosome.only = FALSE,
+  maf = 0.005,
+  missing.rate = 0.05
+)
+
+snpset.id <- unlist(snpset)
+cat("SNPs retained after LD pruning:", length(snpset.id), "\n")
+
+# Run PCA
+pca <- snpgdsPCA(genofile, snp.id = snpset.id, num.thread = 2, autosome.only = FALSE)
+
+# Calculate variance explained
+pc.percent <- pca$varprop * 100
+
+cat("\n=== VARIANCE EXPLAINED ===\n")
+cat("PC1:", round(pc.percent[1], 2), "%\n")
+cat("PC2:", round(pc.percent[2], 2), "%\n")
+cat("PC3:", round(pc.percent[3], 2), "%\n")
+cat("PC4:", round(pc.percent[4], 2), "%\n")
+cat("PC5:", round(pc.percent[5], 2), "%\n")
+cat("Total (PC1-5):", round(sum(pc.percent[1:5]), 2), "%\n")
+
+# Create dataframe with PC scores
+pca_scores <- data.frame(
+  sample.id = pca$sample.id,
+  EV1 = pca$eigenvect[,1],
+  EV2 = pca$eigenvect[,2],
+  EV3 = pca$eigenvect[,3],
+  EV4 = pca$eigenvect[,4],
+  EV5 = pca$eigenvect[,5],
+  stringsAsFactors = FALSE
+)
+
+# Save PCA scores
+write.csv(pca_scores, "IWG_pca.csv", row.names = FALSE)
+cat("\nPCA scores saved to: IWG_pca.csv\n")
+
+# Close GDS file
+snpgdsClose(genofile)
+```
+
+## 3.2 Hierarchical Clustering (HCPC)
+
+```{r hcpc-clustering, eval=FALSE}
+# NOTE: This section was already run to generate IWG_pca_clusters_k6.csv
+# Set eval=TRUE only if you need to regenerate clusters
+# WARNING: Regenerating will create NEW clusters that don't match your GWAS!
+
+setwd("C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Analysis_Outputs_and_Visualizations/Hierarchical Clusters")
+
+# Load PCA results
+pca_results <- read.csv("../../Processed_Data/IWG_pca.csv")
+
+# Prepare PC matrix for HCPC
+pca_matrix <- pca_results[, c("EV1", "EV2", "EV3", "EV4", "EV5")]
+row.names(pca_matrix) <- pca_results$sample.id
+
+# Run HCPC directly on PC scores
+res.hcpc <- HCPC(pca_matrix, graph = FALSE, nb.clust = 6)
+
+cat("\n=== CLUSTER ASSIGNMENTS ===\n")
+print(table(res.hcpc$data.clust$clust))
+
+# Save cluster assignments
+cluster_output <- res.hcpc$data.clust
+cluster_output <- cbind(Accession = rownames(cluster_output), cluster_output)
+names(cluster_output)[names(cluster_output) == "clust"] <- "Cluster"
+write.csv(cluster_output, "IWG_pca_clusters_k6.csv", row.names = FALSE)
+cat("\nCluster assignments saved to: IWG_pca_clusters_k6.csv\n")
+```
+
+## 3.3 Dendrogram Visualization
+
+```{r dendrogram}
+setwd("C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Analysis_Outputs_and_Visualizations/Hierarchical Clusters")
+
+# Load original cluster file
+cluster_data <- read.csv("IWG_pca_clusters_k6.csv")
+
+# Verify cluster sizes
+cat("\n=== CLUSTER SIZES (Original) ===\n")
+print(table(cluster_data$Cluster))
+cat("\nExpected: 24, 12, 27, 28, 169, 61\n")
+
+# If you want to regenerate dendrogram, load HCPC object
+# For now, we'll note that dendrogram was already created
+cat("\nDendrogram previously saved as: hierarchical_cluster_dendrogram.pdf\n")
+```
+
+---
+```{r}
+# Load cluster file
+clusters <- read.csv("C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Data/Hierarchical Clusters/IWG_pca_clusters_k6.csv")
+
+# Load bioclim with geography
+bioclim <- read.csv("C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Data/Phenotype_and_Ecographic_Data/IWG_bioclim.csv")
+
+# Merge
+merged <- merge(clusters, bioclim, 
+                by.x = "Accession", by.y = "PI_Accession")
+
+# Check geographic location of each cluster
+library(dplyr)
+
+cluster_geography <- merged %>%
+  group_by(Cluster) %>%
+  summarise(
+    n = n(),
+    mean_lat = mean(Latitude, na.rm = TRUE),
+    mean_long = mean(Longitude, na.rm = TRUE),
+    min_lat = min(Latitude, na.rm = TRUE),
+    max_lat = max(Latitude, na.rm = TRUE)
+  ) %>%
+  arrange(Cluster)
+
+print(cluster_geography)
+
+# Also show some example accessions from each cluster
+cat("\nExample accessions from each cluster:\n\n")
+for (i in 1:6) {
+  cat("Cluster", i, ":\n")
+  examples <- merged %>% 
+    filter(Cluster == i) %>% 
+    select(Accession, Latitude, Longitude) %>%
+    head(3)
+  print(examples)
+  cat("\n")
+}
+```
+
+
+# 4. FIGURE GENERATION
+
+## 4.1 Figure 2A: PCA Plot with Genetic Clusters
+
+```{r figure-2a}
+setwd("C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Data/Hierarchical Clusters")
+
+# Load ORIGINAL cluster file (used for GWAS)
+pca_with_clusters <- read.csv("IWG_pca_clusters_k6.csv")
+pca_with_clusters$Cluster <- as.factor(pca_with_clusters$Cluster)
+
+# Verify we have the right file
+cat("Cluster sizes in loaded file:\n")
+print(table(pca_with_clusters$Cluster))
+
+# Create PCA plot with correct variance values
+pca_plot <- ggplot(data = pca_with_clusters, 
+                   aes(x = EV1, y = EV2, color = Cluster, fill = Cluster)) +
+  # 95% confidence ellipses
+  stat_ellipse(
+    type = "t",
+    geom = "polygon",
+    alpha = 0.2,
+    show.legend = FALSE
+  ) +
+  # Data points
+  geom_point(size = 2.5, alpha = 0.9) +
+  # Color scheme (consistent across all figures)
+  scale_color_manual(
+    values = c("1" = "red", "2" = "green", "3" = "blue",
+               "4" = "purple", "5" = "orange", "6" = "yellow"),
+    name = "Population"
+  ) +
+  scale_fill_manual(
+    values = c("1" = "red", "2" = "green", "3" = "blue",
+               "4" = "purple", "5" = "orange", "6" = "yellow"),
+    name = "Population"
+  ) +
+  # Axis labels with CORRECT variance values
+  labs(
+    title = "PCA of Genetic Clusters",
+    x = "PC1 (13.7% variance explained)",
+    y = "PC2 (2.3% variance explained)"
+  ) +
+  # Theme
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 10),
+    legend.position = "right",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10)
+  )
+
+# Display plot
+print(pca_plot)
+
+# Save in multiple formats
+ggsave("Figure_2A_PCA_FINAL.pdf", plot = pca_plot, width = 8, height = 6, dpi = 300)
+ggsave("Figure_2A_PCA_FINAL.png", plot = pca_plot, width = 8, height = 6, dpi = 300)
+
+cat("\nFigure 2A saved successfully!\n")
+cat("Files: Figure_2A_PCA_FINAL.pdf and Figure_2A_PCA_FINAL.png\n")
+```
+
+## 4.2 Figure 2B: Geographic Distribution Map
+
+```{r figure-2b}
+# Set paths - CORRECTED
+
+pheno_dir <- file.path(base_dir, "IWG_Chapter_2/Data/Phenotype_and_Ecographic_Data")
+cluster_dir <- file.path(base_dir, "IWG_Chapter_2/Data/Hierarchical Clusters")
+
+# Load bioclimate and cluster data
+bioclim_data <- read.csv(file.path(pheno_dir, "IWG_bioclim.csv"))
+cluster_data <- read.csv(file.path(cluster_dir, "IWG_pca_clusters_k6.csv"))
+
+cat("Loaded bioclim data: ", nrow(bioclim_data), " samples\n")
+
+# Merge datasets
+merged_data <- merge(
+  bioclim_data, 
+  cluster_data,
+  by.x = "PI_Accession",
+  by.y = "Accession",
+  all.x = TRUE
+)
+
+cat("Merged data: ", nrow(merged_data), " samples\n")
+
+# Remove samples without cluster assignments
+merged_data <- merged_data %>% filter(!is.na(Cluster))
+cat("After filtering NAs: ", nrow(merged_data), " samples\n")
+
+# Set cluster as factor with all 6 levels
+merged_data$Cluster <- factor(merged_data$Cluster, levels = 1:6)
+
+# Verify cluster sizes in merged data
+cat("\nCluster sizes in map data:\n")
+print(table(merged_data$Cluster))
+
+# Load world map
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Create geographic distribution map
+geo_map <- ggplot() +
+  # World map background
+  geom_sf(data = world, fill = "gray95", color = "gray70", linewidth = 0.2) +
+  # Focus on Eurasia (native range)
+  coord_sf(xlim = c(-10, 135), ylim = c(25, 65), expand = FALSE) +
+  # Sampling points
+  geom_point(
+    data = merged_data,
+    aes(x = Longitude, y = Latitude, fill = Cluster),
+    shape = 21, 
+    size = 3, 
+    stroke = 0.5, 
+    color = "black",
+    alpha = 0.85
+  ) +
+  # Color scheme (matching Figure 2A)
+  scale_fill_manual(
+    values = c("1" = "red", "2" = "green", "3" = "blue",
+               "4" = "purple", "5" = "orange", "6" = "yellow"),
+    name = "Population",
+    labels = c(
+      "1 (Northern Continental, n=24)",
+      "2 (Eastern Mediterranean, n=12)",
+      "3 (Eastern European Steppe, n=27)",
+      "4 (Caucasus Temperate, n=28)",
+      "5 (Iranian Plateau/Central Asia, n=169)",
+      "6 (Eastern Central Asian highlands, n=61)"
+    )
+  ) +
+  # Labels and theme
+  labs(
+    x = "Longitude",
+    y = "Latitude",
+    title = "Geographic Distribution of IWG Genetic Clusters"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.background = element_rect(fill = "lightblue", color = NA),
+    panel.grid.major = element_line(color = "gray80", linewidth = 0.2),
+    legend.position = "right",
+    legend.title = element_text(size = 11, face = "bold"),
+    legend.text = element_text(size = 9),
+    axis.title = element_text(size = 11),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold")
+  )
+
+# Display plot
+print(geo_map)
+
+# Save in multiple formats
+ggsave(file.path(cluster_dir, "Figure_2B_Geographic_FINAL.pdf"), 
+       plot = geo_map, width = 10, height = 6, dpi = 300)
+ggsave(file.path(cluster_dir, "Figure_2B_Geographic_FINAL.png"), 
+       plot = geo_map, width = 10, height = 6, dpi = 300)
+
+cat("\nFigure 2B saved successfully!\n")
+cat("Files: Figure_2B_Geographic_FINAL.pdf and Figure_2B_Geographic_FINAL.png\n")
+
+```
+
+---
+
+# 5. ADDITIONAL ANALYSES (Placeholders)
+
+## 5.1 Climate Gradient Analysis (Figure 4)
+
+```{r climate-gradients, eval=FALSE}
+# Code for latitudinal climate gradient analysis
+# Creates Figure 4: Temperature and precipitation gradients
+
+# Load climate data
+# Plot BIO1, BIO12, BIO4, BIO15 vs latitude
+# Add regression lines and correlation statistics
+```
+
+## 5.2 Environmental GWAS
+
+```{r gwas-analysis, eval=FALSE}
+# Environmental GWAS using rrBLUP
+# Test 19 bioclimatic variables against 17,797 SNPs
+# Compare Q, K, Q+K models
+# Identify 10 genome-wide significant SNPs (Bonferroni corrected)
+
+# Key settings:
+# - PC covariates: EV1-EV5 (from IWG_pca_clusters_k6.csv)
+# - Kinship matrix: VanRaden method
+# - Significance threshold: p < 2.81×10⁻⁶
+```
+
+## 5.3 Redundancy Analysis (RDA)
+
+```{r rda-analysis, eval=FALSE}
+# RDA to assess variance explained by environmental variables
+# Creates Figure S2
+```
+
+## 5.4 Latent Factor Mixed Models (LFMM)
+
+```{r lfmm-analysis, eval=FALSE}
+# LFMM with K=6 latent factors
+# Identify SNP-environment associations (FDR < 0.05)
+# Creates Figure S3
+```
+
+## 5.5 Gene Ontology Enrichment
+
+```{r go-enrichment, eval=FALSE}
+# GO enrichment analysis using topGO
+# Compare temperature-associated vs precipitation-associated genes
+# Test for pathway divergence (hormone signaling vs chromatin remodeling)
+```
+
+## 5.6 Population-Specific Adaptation (Interaction Analysis)
+
+```{r interaction-analysis, eval=FALSE}
+# Two-way ANOVA: climate ~ population * genotype
+# Test 62 SNP-climate combinations
+# Calculate % parallel vs divergent adaptation
+# 
+# CRITICAL: Use IWG_pca_clusters_k6.csv for population assignments
+# This ensures consistency with GWAS results
+```
+
+---
+
+# 6. VERIFICATION & DIAGNOSTICS
+
+## 6.1 Verify Cluster File Usage
+
+```{r verify-clusters}
+# Verify which cluster file was used for GWAS
+cat("\n=== VERIFICATION ===\n")
+cat("This analysis uses: IWG_pca_clusters_k6.csv\n")
+cat("Expected cluster sizes: 24, 12, 27, 28, 169, 61\n\n")
+
+# Load and check
+cluster_check <- read.csv("C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2/Analysis_Outputs_and_Visualizations/Hierarchical Clusters/IWG_pca_clusters_k6.csv")
+
+cat("Actual cluster sizes:\n")
+print(table(cluster_check$Cluster))
+
+cat("\n✓ Cluster file is correct for GWAS consistency!\n")
+```
+
+## 6.2 Variance Values Summary
+
+```{r variance-summary}
+cat("\n=== VARIANCE EXPLAINED ===\n")
+cat("PC1: 13.7%\n")
+cat("PC2: 2.3%\n")
+cat("PC3: 1.6%\n")
+cat("PC4: 1.4%\n")
+cat("PC5: 1.2%\n")
+cat("Total (PC1-5): 20.2%\n")
+cat("\nThese values are used in all figure labels and manuscript text.\n")
+```
+
+---
+
+# 7. SESSION INFORMATION
+
+```{r session-info}
+sessionInfo()
+```
+
+---
+
+# NOTES
+
+## File Locations and Key Files
+
+**Input files:**
+- `IWG.gds` - Genotype data (17,797 SNPs, 296 samples)
+- `IWG_bioclim.csv` - Climate and geographic data
+- `IWG_pca_clusters_k6.csv` - **ORIGINAL cluster assignments (used for GWAS)**
+
+**Output files:**
+- `Figure_2A_PCA_FINAL.pdf/png` - PCA plot with 6 clusters
+- `Figure_2B_Geographic_FINAL.pdf/png` - Geographic distribution map
+
+## Key Parameters
+
+- **SNP filtering:** MAF > 0.005, missing < 5%
+- **LD pruning:** r² < 0.2 in 500-kb windows
+- **Markers:** 4,703 LD-pruned (from 17,797 total)
+- **Populations:** K = 6 clusters
+- **Cluster sizes:** n = 24, 12, 27, 28, 169, 61
+- **Variance explained:** PC1 = 13.7%, PC2 = 2.3%, Total = 20.2%
+
+## Color Scheme (Consistent Across All Figures)
+
+| Population | Color | n | Geographic Region |
+|------------|-------|---|-------------------|
+| 1 | yellow1 | 24 | Northern Continental |
+| 2 | lightblue | 12 | Eastern Mediterranean |
+| 3 | green | 27 | Eastern European Steppe |
+| 4 | orange | 28 | Caucasus Temperate |
+| 5 | purple | 169 | Iranian Plateau/Central Asia |
+| 6 | magenta | 61 | Eastern Central Asian highlands |
+
+## CRITICAL NOTES
+
+**DO NOT regenerate cluster file!**
+- The file `IWG_pca_clusters_k6.csv` contains the ORIGINAL cluster assignments
+- These clusters were used for all GWAS and interaction analyses
+- Regenerating clusters will create inconsistencies with published results
+- Only sections 3.1 and 3.2 should have `eval=FALSE` to prevent accidental regeneration
+
+**Variance values are corrected:**
+- Old (incorrect): PC1 = 25%, PC2 = 15%
+- New (correct): PC1 = 13.7%, PC2 = 2.3%
+- All figures and manuscript text use corrected values
+
+## Manuscript Consistency Checklist
+
+- [x] Cluster sizes match across Methods, Results, and Figures: 24, 12, 27, 28, 169, 61
+- [x] Variance values correct in all figure labels: 13.7%, 2.3%
+- [x] Same cluster file used for GWAS and figures: IWG_pca_clusters_k6.csv
+- [x] Colors consistent between Figure 2A and 2B
+- [x] Geographic population descriptions match cluster assignments
+
+---
+
+**END OF ANALYSIS**

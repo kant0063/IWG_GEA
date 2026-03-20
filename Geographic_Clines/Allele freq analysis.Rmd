@@ -1,0 +1,770 @@
+---
+title: "GWAS allele frequencies in sub populations"
+author: "Elizabeth Campbell"
+date: "2025-12-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# ================================================================================
+# ALLELE FREQUENCY & GEOGRAPHIC CORRELATION ANALYSIS - UPDATED VERSION
+# For GWAS Presentation - Climate Adaptation in Kernza
+# ================================================================================
+# Author: Analysis for Elizabeth's Kernza climate adaptation research
+# Updated to work with actual file locations and structures
+# ================================================================================
+
+cat("\n")
+cat("================================================================================\n")
+cat("ALLELE FREQUENCY & GEOGRAPHIC CORRELATION ANALYSIS\n")
+cat("Climate Adaptation in Intermediate Wheatgrass (Kernza)\n")
+cat("================================================================================\n\n")
+
+# ================================================================================
+# LOAD REQUIRED PACKAGES
+# ================================================================================
+
+cat("Step 1: Loading required packages...\n")
+required_packages <- c("data.table", "ggplot2", "dplyr", "tidyr", "viridis", 
+                       "gridExtra", "vcfR", "readxl")
+
+for (pkg in required_packages) {
+  if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    cat("  Installing", pkg, "...\n")
+    install.packages(pkg, repos = "http://cran.us.r-project.org")
+    library(pkg, character.only = TRUE)
+  }
+}
+cat("✓ All packages loaded successfully\n\n")
+
+# ================================================================================
+# FILE PATHS
+# ================================================================================
+
+cat("Step 2: Setting up file paths...\n")
+
+BASE_DIR <- "C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2"
+PHENO_DIR <- file.path(BASE_DIR, "Phenotype_and_Ecographic_Data")
+GENO_DIR <- file.path(BASE_DIR, "Raw_genotype_data")
+GWAS_DIR <- file.path(BASE_DIR, "Analysis_Outputs_and_Visualizations", "GWAS")
+POP_DIR <- file.path(BASE_DIR, "Analysis_Outputs_and_Visualizations", "Hierarchical Clusters")
+OUTPUT_DIR <- file.path(BASE_DIR, "Analysis_Outputs_and_Visualizations")
+
+# Create output subdirectory
+AF_OUTPUT_DIR <- file.path(OUTPUT_DIR, "Allele_Frequency_Analysis")
+if (!dir.exists(AF_OUTPUT_DIR)) {
+  dir.create(AF_OUTPUT_DIR, recursive = TRUE)
+  cat("✓ Created output directory:", AF_OUTPUT_DIR, "\n")
+}
+
+cat("✓ File paths configured\n\n")
+
+# ================================================================================
+# STEP 3: LOAD POPULATION STRUCTURE
+# ================================================================================
+
+cat("Step 3: Loading population structure data...\n")
+
+# Load the K=6 cluster assignments
+pop_file <- file.path(POP_DIR, "IWG_pca_clusters_k6.csv")
+if (!file.exists(pop_file)) {
+  cat("ERROR: Population file not found at:", pop_file, "\n")
+  cat("Please check the file path!\n")
+  stop("Missing population file")
+}
+
+pop_data <- fread(file = pop_file, header = TRUE)
+cat("  ✓ Loaded", nrow(pop_data), "samples with population assignments\n")
+cat("  Columns:", paste(colnames(pop_data), collapse = ", "), "\n")
+
+# Show population distribution
+cat("\n  Population distribution (K=6 clusters):\n")
+pop_table <- table(pop_data$Cluster)
+for (clust in names(pop_table)) {
+  cat(sprintf("    Cluster %s: %d samples\n", clust, pop_table[clust]))
+}
+cat("\n")
+
+# ================================================================================
+# STEP 4: LOAD CLIMATE DATA
+# ================================================================================
+
+cat("Step 4: Loading climate (bioclim) data...\n")
+
+climate_file <- file.path(PHENO_DIR, "IWG_bioclim.csv")
+if (!file.exists(climate_file)) {
+  cat("ERROR: Climate file not found at:", climate_file, "\n")
+  stop("Missing climate file")
+}
+
+climate_data <- fread(file = climate_file, header = TRUE)
+cat("  ✓ Loaded climate data for", nrow(climate_data), "accessions\n")
+cat("  Climate variables available:", sum(grepl("wc2.1", colnames(climate_data))), "\n")
+
+# Rename climate columns for easier use
+# BIO1 = Annual Mean Temperature, BIO12 = Annual Precipitation
+colnames(climate_data)[colnames(climate_data) == "wc2.1_30s_bio_1"] <- "BIO1"
+colnames(climate_data)[colnames(climate_data) == "wc2.1_30s_bio_12"] <- "BIO12"
+
+# Remove rows with missing climate data
+climate_data_clean <- climate_data[!is.na(climate_data$BIO1) & !is.na(climate_data$BIO12), ]
+cat("  ✓ Retained", nrow(climate_data_clean), "samples with complete climate data\n\n")
+
+# ================================================================================
+# STEP 5: MERGE POPULATION AND CLIMATE DATA
+# ================================================================================
+
+cat("Step 5: Merging population and climate data...\n")
+
+merged_data <- merge(pop_data, climate_data_clean,
+                     by.x = "Accession",
+                     by.y = "PI_Accession",
+                     all = FALSE)
+
+cat("  ✓ Merged dataset has", nrow(merged_data), "samples\n")
+cat("  Final columns:", paste(colnames(merged_data)[1:10], collapse = ", "), "...\n\n")
+
+# Summary statistics by population
+cat("  Climate summary by population:\n")
+climate_summary <- merged_data %>%
+  group_by(Cluster) %>%
+  summarise(
+    n = n(),
+    mean_temp = round(mean(BIO1, na.rm = TRUE), 1),
+    sd_temp = round(sd(BIO1, na.rm = TRUE), 1),
+    mean_precip = round(mean(BIO12, na.rm = TRUE), 0),
+    sd_precip = round(sd(BIO12, na.rm = TRUE), 0)
+  )
+print(climate_summary)
+cat("\n")
+
+# ================================================================================
+# STEP 6: LOAD GWAS RESULTS
+# ================================================================================
+
+cat("Step 6: Loading GWAS results...\n")
+cat("  Searching for GWAS result files in:", GWAS_DIR, "\n")
+
+# List all GWAS files
+gwas_files <- list.files(GWAS_DIR, pattern = "gwas_four_models_bio", full.names = TRUE)
+cat("  Found", length(gwas_files), "GWAS result files\n")
+
+if (length(gwas_files) == 0) {
+  cat("  WARNING: No GWAS files found. Please check the directory.\n")
+  cat("  Looking for files matching pattern: gwas_four_models_bio*\n")
+  cat("  Available files in GWAS directory:\n")
+  print(list.files(GWAS_DIR))
+}
+
+# For this analysis, let's focus on BIO1 (temperature) and BIO12 (precipitation)
+# You can modify this to include other traits
+gwas_bio1_file <- file.path(GWAS_DIR, "gwas_four_models_bio1.csv")
+gwas_bio12_file <- file.path(GWAS_DIR, "gwas_four_models_bio12.csv")
+
+# Load GWAS results
+all_gwas_results <- data.frame()
+
+for (gwas_file in c(gwas_bio1_file, gwas_bio12_file)) {
+  if (file.exists(gwas_file)) {
+    trait_name <- gsub(".*bio([0-9]+).*", "BIO\\1", basename(gwas_file))
+    gwas_temp <- fread(file = gwas_file, header = TRUE)
+    gwas_temp$Trait <- trait_name
+    
+    # Show what models are in the data
+    if("model" %in% colnames(gwas_temp)) {
+      cat("    Models found:", paste(unique(gwas_temp$model), collapse = ", "), "\n")
+    }
+    
+    all_gwas_results <- rbind(all_gwas_results, gwas_temp)
+    cat("  ✓ Loaded", nrow(gwas_temp), "SNPs for", trait_name, "\n")
+  } else {
+    cat("  WARNING: File not found:", gwas_file, "\n")
+  }
+}
+
+if (nrow(all_gwas_results) == 0) {
+  cat("\nERROR: No GWAS results loaded. Please check file paths and names.\n")
+  cat("Expected files:\n")
+  cat("  -", gwas_bio1_file, "\n")
+  cat("  -", gwas_bio12_file, "\n")
+  stop("Cannot proceed without GWAS results")
+}
+
+cat("\n  Total GWAS results loaded:", nrow(all_gwas_results), "SNPs across traits\n")
+cat("  Columns:", paste(colnames(all_gwas_results)[1:10], collapse = ", "), "...\n\n")
+
+# Rename marker column to SNP for consistency
+if("marker" %in% colnames(all_gwas_results)) {
+  colnames(all_gwas_results)[colnames(all_gwas_results) == "marker"] <- "SNP"
+  cat("  ✓ Renamed 'marker' column to 'SNP'\n")
+}
+
+# Rename p_value column to p for consistency
+if("p_value" %in% colnames(all_gwas_results)) {
+  colnames(all_gwas_results)[colnames(all_gwas_results) == "p_value"] <- "p"
+  cat("  ✓ Renamed 'p_value' column to 'p'\n\n")
+}
+
+# If multiple models are present, you can filter for one specific model
+# Uncomment and modify the line below if you want to use only one model:
+# all_gwas_results <- all_gwas_results[all_gwas_results$model == "Q+K", ]
+
+# Show model distribution if applicable
+if("model" %in% colnames(all_gwas_results)) {
+  cat("  Model distribution in GWAS results:\n")
+  model_table <- table(all_gwas_results$model)
+  for(m in names(model_table)) {
+    cat(sprintf("    %s: %d SNPs\n", m, model_table[m]))
+  }
+  cat("\n")
+}
+
+# Filter for significant SNPs (adjust p-value threshold as needed)
+# Common thresholds: 0.05, 1e-5, 1e-6, or Bonferroni correction
+p_threshold <- 1e-5  # MODIFY THIS IF NEEDED
+sig_gwas <- all_gwas_results[all_gwas_results$p < p_threshold, ]
+cat("  Significant SNPs (p <", p_threshold, "):", nrow(sig_gwas), "\n\n")
+
+if (nrow(sig_gwas) == 0) {
+  cat("  WARNING: No SNPs meet significance threshold. Trying p < 0.01...\n")
+  p_threshold <- 0.01
+  sig_gwas <- all_gwas_results[all_gwas_results$p < p_threshold, ]
+  cat("  Significant SNPs (p <", p_threshold, "):", nrow(sig_gwas), "\n\n")
+}
+
+# If we have multiple models, keep the best p-value for each SNP
+if("model" %in% colnames(sig_gwas) && length(unique(sig_gwas$model)) > 1) {
+  cat("  Multiple models detected - keeping best p-value for each SNP...\n")
+  n_before <- nrow(sig_gwas)
+  
+  # For each SNP, keep the row with the smallest p-value
+  sig_gwas <- sig_gwas %>%
+    group_by(SNP, Trait) %>%
+    arrange(p) %>%
+    slice(1) %>%
+    ungroup() %>%
+    as.data.frame()
+  
+  n_after <- nrow(sig_gwas)
+  cat("  Reduced from", n_before, "to", n_after, "unique SNPs\n\n")
+}
+
+# ================================================================================
+# STEP 7: LOAD GENOTYPE DATA
+# ================================================================================
+
+cat("Step 7: Loading genotype data...\n")
+
+vcf_file <- file.path(GENO_DIR, "IWG_PI.vcf")
+
+if (!file.exists(vcf_file)) {
+  cat("ERROR: VCF file not found at:", vcf_file, "\n")
+  stop("Missing genotype file")
+}
+
+cat("  Reading VCF file (this may take a few minutes)...\n")
+vcf <- read.vcfR(vcf_file, verbose = FALSE)
+cat("  ✓ VCF loaded:", nrow(vcf), "SNPs,", ncol(vcf@gt) - 1, "samples\n")
+
+# Extract genotype matrix
+cat("  Extracting genotype matrix...\n")
+gt_matrix <- extract.gt(vcf, element = "GT")
+
+# Convert genotypes to numeric (0, 1, 2)
+cat("  Converting genotypes to numeric format...\n")
+convert_gt <- function(gt) {
+  # Convert VCF genotypes to dosage format
+  # 0/0 or 0|0 -> 0
+  # 0/1 or 1/0 or 0|1 or 1|0 -> 1
+  # 1/1 or 1|1 -> 2
+  # ./. or .|. -> NA
+  gt <- gsub("\\|", "/", gt)  # Convert | to /
+  gt <- ifelse(gt == "0/0", 0,
+               ifelse(gt == "1/0" | gt == "0/1", 1,
+                      ifelse(gt == "1/1", 2, NA)))
+  return(as.numeric(gt))
+}
+
+gt_numeric <- apply(gt_matrix, 2, convert_gt)
+rownames(gt_numeric) <- paste0("S", vcf@fix[, "CHROM"], "_", vcf@fix[, "POS"])
+
+cat("  ✓ Converted to numeric format:", nrow(gt_numeric), "SNPs\n")
+cat("  Sample names:", paste(colnames(gt_numeric)[1:5], collapse = ", "), "...\n\n")
+
+# ================================================================================
+# STEP 8: MATCH SAMPLES ACROSS DATASETS
+# ================================================================================
+
+cat("Step 8: Matching samples across datasets...\n")
+
+# Get common samples
+geno_samples <- colnames(gt_numeric)
+pop_samples <- merged_data$Accession
+common_samples <- intersect(geno_samples, pop_samples)
+
+cat("  Genotype samples:", length(geno_samples), "\n")
+cat("  Population/climate samples:", length(pop_samples), "\n")
+cat("  Common samples:", length(common_samples), "\n\n")
+
+if (length(common_samples) < 50) {
+  cat("  WARNING: Few samples overlap. Checking for naming differences...\n")
+  cat("  First 10 genotype sample names:", paste(head(geno_samples, 10), collapse = ", "), "\n")
+  cat("  First 10 population sample names:", paste(head(pop_samples, 10), collapse = ", "), "\n")
+}
+
+# Subset data to common samples
+gt_numeric_subset <- gt_numeric[, common_samples]
+merged_data_subset <- merged_data[merged_data$Accession %in% common_samples, ]
+
+cat("  ✓ Using", length(common_samples), "samples for analysis\n\n")
+
+# ================================================================================
+# STEP 9: CALCULATE ALLELE FREQUENCIES
+# ================================================================================
+
+cat("Step 9: Calculating allele frequencies by population...\n")
+
+# Match SNP IDs between GWAS results and genotype data
+gwas_snp_ids <- sig_gwas$SNP
+geno_snp_ids <- rownames(gt_numeric_subset)
+
+# Try to match SNPs (may need adjustment based on naming conventions)
+matched_snps <- intersect(gwas_snp_ids, geno_snp_ids)
+cat("  GWAS significant SNPs:", length(gwas_snp_ids), "\n")
+cat("  Genotype SNPs:", length(geno_snp_ids), "\n")
+cat("  Matched SNPs:", length(matched_snps), "\n\n")
+
+# Create SNP ID mapping table for direct matches
+if (length(matched_snps) > 0) {
+  cat("  ✓ Direct matching successful!\n")
+  snp_id_map <- data.frame(
+    gwas_id = matched_snps,
+    geno_id = matched_snps,
+    stringsAsFactors = FALSE
+  )
+}
+
+if (length(matched_snps) == 0) {
+  cat("  WARNING: No SNP ID matches between GWAS and genotype data!\n")
+  cat("  First 5 GWAS SNP IDs:", paste(head(gwas_snp_ids, 5), collapse = ", "), "\n")
+  cat("  First 5 Genotype SNP IDs:", paste(head(geno_snp_ids, 5), collapse = ", "), "\n")
+  cat("\n  Attempting to match by position...\n")
+  
+  # Try alternative matching strategies here if needed
+  
+  # Strategy 1: Try matching just the position part
+  cat("  Attempting to match by chromosome and position...\n")
+  
+  # Try multiple matching strategies
+  
+  # Strategy 1: Extract chromosome and position from genotype IDs (format: SJ01_14053676)
+  geno_df <- data.frame(
+    geno_id = geno_snp_ids,
+    stringsAsFactors = FALSE
+  )
+  geno_df$chr <- sapply(strsplit(geno_df$geno_id, "_"), function(x) gsub("^S", "", x[1]))
+  geno_df$pos <- sapply(strsplit(geno_df$geno_id, "_"), function(x) x[2])
+  
+  # Strategy 2: Check GWAS SNP ID format
+  cat("  Checking GWAS SNP ID format...\n")
+  cat("  First 10 GWAS SNPs:", paste(head(gwas_snp_ids, 10), collapse = ", "), "\n")
+  
+  # Try to extract chr and pos from GWAS IDs
+  # Common formats: "S1_12345", "chr1_12345", "1_12345", "rs123456"
+  gwas_df <- data.frame(
+    gwas_id = gwas_snp_ids,
+    stringsAsFactors = FALSE
+  )
+  
+  # Check if GWAS IDs contain underscores (chr_pos format)
+  if(any(grepl("_", gwas_df$gwas_id))) {
+    gwas_df$chr <- sapply(strsplit(as.character(gwas_df$gwas_id), "_"), function(x) {
+      chr <- x[1]
+      chr <- gsub("^S", "", chr)  # Remove leading S if present
+      chr <- gsub("^chr", "", chr)  # Remove "chr" prefix if present
+      return(chr)
+    })
+    gwas_df$pos <- sapply(strsplit(as.character(gwas_df$gwas_id), "_"), function(x) x[2])
+  } else {
+    cat("  GWAS SNPs don't have underscore format. Need different matching strategy.\n")
+    gwas_df$chr <- NA
+    gwas_df$pos <- NA
+  }
+  
+  # Try matching by chr and pos
+  geno_df$chr_pos <- paste(geno_df$chr, geno_df$pos, sep="_")
+  gwas_df$chr_pos <- paste(gwas_df$chr, gwas_df$pos, sep="_")
+  
+  matched_chr_pos <- intersect(gwas_df$chr_pos[!is.na(gwas_df$chr_pos)], 
+                               geno_df$chr_pos[!is.na(geno_df$chr_pos)])
+  
+  if(length(matched_chr_pos) > 0) {
+    cat("  ✓ Found", length(matched_chr_pos), "matches by chr:pos!\n\n")
+    
+    # Get the genotype IDs for matched positions
+    matched_snps <- geno_df$geno_id[geno_df$chr_pos %in% matched_chr_pos]
+    
+    # Also store the GWAS IDs for annotation
+    gwas_match_table <- gwas_df[gwas_df$chr_pos %in% matched_chr_pos, c("gwas_id", "chr_pos")]
+    geno_match_table <- geno_df[geno_df$chr_pos %in% matched_chr_pos, c("geno_id", "chr_pos")]
+    snp_id_map <- merge(gwas_match_table, geno_match_table, by = "chr_pos")
+    
+  } else {
+    cat("\n")
+    cat("================================================================================\n")
+    cat("Still no matches found!\n")
+    cat("================================================================================\n")
+    cat("\nDebugging information:\n")
+    cat("\nGWAS SNP format examples:\n")
+    print(head(gwas_df, 10))
+    cat("\nGenotype SNP format examples:\n")
+    print(head(geno_df, 10))
+    cat("\nThe SNP ID formats don't match. You may need to:\n")
+    cat("1. Check the column name for SNP IDs in your GWAS file\n")
+    cat("2. Modify the matching logic based on your specific format\n")
+    cat("3. Pre-process one of the files to match the other's format\n")
+    stop("Cannot match SNPs between datasets")
+  }
+}
+
+# Calculate allele frequencies
+allele_freq_results <- data.frame()
+
+if(length(matched_snps) == 0) {
+  cat("\n")
+  cat("================================================================================\n")
+  cat("ERROR: Cannot proceed - no SNPs matched!\n")
+  cat("================================================================================\n")
+  cat("\nDebugging information:\n")
+  cat("\nExample GWAS SNP IDs:\n")
+  print(head(gwas_snp_ids, 20))
+  cat("\nExample Genotype SNP IDs:\n")
+  print(head(geno_snp_ids, 20))
+  cat("\nPlease check the SNP ID format and update the matching logic if needed.\n")
+  cat("You may need to modify the script to match your specific SNP naming convention.\n")
+  stop("No SNP matches found between GWAS and genotype data")
+}
+
+populations <- unique(merged_data_subset$Cluster)
+cat("  Calculating for", length(populations), "populations\n")
+cat("  Progress: ")
+
+for (i in seq_along(matched_snps)) {
+  if (i %% 50 == 0) cat(".")
+  
+  snp <- matched_snps[i]
+  snp_geno <- gt_numeric_subset[snp, ]
+  
+  # Get GWAS info for this SNP using the mapping table
+  geno_id_match <- snp_id_map$geno_id[snp_id_map$geno_id == snp]
+  if(length(geno_id_match) > 0) {
+    gwas_id_match <- snp_id_map$gwas_id[snp_id_map$geno_id == snp][1]
+    snp_gwas_info <- sig_gwas[sig_gwas$SNP == gwas_id_match, ][1, ]
+  } else {
+    # Fallback - try direct match
+    snp_gwas_info <- sig_gwas[sig_gwas$SNP == snp, ][1, ]
+  }
+  
+  for (pop in populations) {
+    # Get samples in this population
+    pop_sample_ids <- merged_data_subset$Accession[merged_data_subset$Cluster == pop]
+    
+    # Get genotypes for these samples
+    pop_genotypes <- snp_geno[pop_sample_ids]
+    
+    # Calculate allele frequency (proportion of alternative alleles)
+    n_samples <- sum(!is.na(pop_genotypes))
+    if (n_samples > 0) {
+      alt_allele_freq <- sum(pop_genotypes, na.rm = TRUE) / (2 * n_samples)
+      
+      # Get mean climate for this population
+      pop_climate <- merged_data_subset[merged_data_subset$Cluster == pop, ]
+      mean_temp <- mean(pop_climate$BIO1, na.rm = TRUE)
+      mean_precip <- mean(pop_climate$BIO12, na.rm = TRUE)
+      
+      # Store result
+      allele_freq_results <- rbind(allele_freq_results, data.frame(
+        SNP = snp,
+        Population = pop,
+        Allele_Freq = alt_allele_freq,
+        n_samples = n_samples,
+        Trait = snp_gwas_info$Trait,
+        P_value = snp_gwas_info$p,
+        Effect = if("effect" %in% colnames(snp_gwas_info)) snp_gwas_info$effect else NA,
+        Model = if("model" %in% colnames(snp_gwas_info)) snp_gwas_info$model else NA,
+        Mean_BIO1 = mean_temp,
+        Mean_BIO12 = mean_precip,
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+}
+
+cat(" Done!\n")
+cat("  ✓ Calculated frequencies for", length(unique(allele_freq_results$SNP)), "SNPs\n\n")
+
+# Check if we have any data
+if(nrow(allele_freq_results) == 0) {
+  cat("\n")
+  cat("================================================================================\n")
+  cat("ERROR: No allele frequencies calculated!\n")
+  cat("================================================================================\n")
+  cat("This means SNP matching failed. Check the debugging output above.\n")
+  stop("Cannot proceed without allele frequency data")
+}
+
+# Save allele frequency results
+af_file <- file.path(AF_OUTPUT_DIR, "allele_frequencies_by_population.csv")
+fwrite(allele_freq_results, af_file)
+cat("  ✓ Saved to:", af_file, "\n\n")
+
+# ================================================================================
+# STEP 10: TEST GEOGRAPHIC CORRELATIONS
+# ================================================================================
+
+cat("Step 10: Testing correlations with climate...\n")
+
+correlation_results <- data.frame()
+
+for (snp in unique(allele_freq_results$SNP)) {
+  snp_data <- allele_freq_results[allele_freq_results$SNP == snp, ]
+  
+  # Correlation with temperature
+  if (length(unique(snp_data$Mean_BIO1)) > 1) {
+    cor_temp <- cor.test(snp_data$Allele_Freq, snp_data$Mean_BIO1, method = "pearson")
+    r_temp <- cor_temp$estimate
+    p_temp <- cor_temp$p.value
+  } else {
+    r_temp <- NA
+    p_temp <- NA
+  }
+  
+  # Correlation with precipitation
+  if (length(unique(snp_data$Mean_BIO12)) > 1) {
+    cor_precip <- cor.test(snp_data$Allele_Freq, snp_data$Mean_BIO12, method = "pearson")
+    r_precip <- cor_precip$estimate
+    p_precip <- cor_precip$p.value
+  } else {
+    r_precip <- NA
+    p_precip <- NA
+  }
+  
+  correlation_results <- rbind(correlation_results, data.frame(
+    SNP = snp,
+    Trait = snp_data$Trait[1],
+    P_value_GWAS = snp_data$P_value[1],
+    Effect = snp_data$Effect[1],
+    Model = snp_data$Model[1],
+    Cor_Temperature = r_temp,
+    P_Temperature = p_temp,
+    Cor_Precipitation = r_precip,
+    P_Precipitation = p_precip,
+    stringsAsFactors = FALSE
+  ))
+}
+
+# Save correlation results
+cor_file <- file.path(AF_OUTPUT_DIR, "climate_correlations.csv")
+fwrite(correlation_results, cor_file)
+cat("  ✓ Saved to:", cor_file, "\n\n")
+
+# Print summary
+sig_temp_cor <- correlation_results[!is.na(correlation_results$P_Temperature) & 
+                                    correlation_results$P_Temperature < 0.05, ]
+sig_precip_cor <- correlation_results[!is.na(correlation_results$P_Precipitation) & 
+                                      correlation_results$P_Precipitation < 0.05, ]
+
+cat("  Significant temperature correlations (p < 0.05):", nrow(sig_temp_cor), "\n")
+cat("  Significant precipitation correlations (p < 0.05):", nrow(sig_precip_cor), "\n\n")
+
+# ================================================================================
+# STEP 11: CREATE VISUALIZATIONS
+# ================================================================================
+
+cat("Step 11: Creating visualizations...\n\n")
+
+# Convert Population to factor for plotting
+allele_freq_results$Population <- as.factor(allele_freq_results$Population)
+
+# --- VISUALIZATION 1: HEATMAP ---
+cat("  Creating allele frequency heatmap...\n")
+
+# Limit to SNPs with interesting patterns (variable across populations)
+af_variance <- allele_freq_results %>%
+  group_by(SNP) %>%
+  summarise(var = var(Allele_Freq, na.rm = TRUE)) %>%
+  arrange(desc(var))
+
+top_variable_snps <- head(af_variance$SNP, min(50, nrow(af_variance)))
+heatmap_data <- allele_freq_results[allele_freq_results$SNP %in% top_variable_snps, ]
+
+p_heatmap <- ggplot(heatmap_data, aes(x = Population, y = SNP, fill = Allele_Freq)) +
+  geom_tile(color = "white", size = 0.5) +
+  scale_fill_viridis(option = "plasma", name = "Allele\nFrequency",
+                     limits = c(0, 1), breaks = seq(0, 1, 0.25)) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5, size = 14, face = "bold"),
+        axis.text.y = element_text(size = 6),
+        axis.title = element_text(size = 14, face = "bold"),
+        legend.title = element_text(size = 12, face = "bold"),
+        legend.text = element_text(size = 10),
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        panel.grid = element_blank()) +
+  labs(title = "Allele Frequencies Across Populations",
+       x = "Population (K=6 Cluster)",
+       y = "SNP")
+
+heatmap_file <- file.path(AF_OUTPUT_DIR, "allele_frequency_heatmap.png")
+ggsave(heatmap_file, p_heatmap, width = 10, height = 12, dpi = 300)
+cat("    ✓ Saved:", basename(heatmap_file), "\n")
+
+# --- VISUALIZATION 2: TEMPERATURE CORRELATIONS ---
+cat("  Creating temperature correlation plots...\n")
+
+top_temp_snps <- correlation_results %>%
+  filter(!is.na(Cor_Temperature)) %>%
+  arrange(desc(abs(Cor_Temperature))) %>%
+  head(9)
+
+if (nrow(top_temp_snps) > 0) {
+  plot_data_temp <- allele_freq_results %>%
+    filter(SNP %in% top_temp_snps$SNP) %>%
+    mutate(SNP_label = paste0(SNP, "\nr = ", 
+                              round(correlation_results$Cor_Temperature[match(SNP, correlation_results$SNP)], 2)))
+  
+  p_temp <- ggplot(plot_data_temp, aes(x = Mean_BIO1, y = Allele_Freq, color = Population)) +
+    geom_point(size = 3, alpha = 0.7) +
+    geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed", size = 1) +
+    facet_wrap(~SNP_label, scales = "free", ncol = 3) +
+    scale_color_viridis(discrete = TRUE, option = "turbo") +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "bottom",
+          strip.text = element_text(size = 9, face = "bold"),
+          strip.background = element_rect(fill = "lightgray"),
+          axis.title = element_text(size = 12, face = "bold"),
+          plot.title = element_text(size = 14, face = "bold", hjust = 0.5)) +
+    labs(title = "Allele Frequency vs Temperature",
+         x = "Mean Annual Temperature (°C × 10)",
+         y = "Alternative Allele Frequency",
+         color = "Population")
+  
+  temp_file <- file.path(AF_OUTPUT_DIR, "allele_freq_vs_temperature.png")
+  ggsave(temp_file, p_temp, width = 14, height = 10, dpi = 300)
+  cat("    ✓ Saved:", basename(temp_file), "\n")
+}
+
+# --- VISUALIZATION 3: PRECIPITATION CORRELATIONS ---
+cat("  Creating precipitation correlation plots...\n")
+
+top_precip_snps <- correlation_results %>%
+  filter(!is.na(Cor_Precipitation)) %>%
+  arrange(desc(abs(Cor_Precipitation))) %>%
+  head(9)
+
+if (nrow(top_precip_snps) > 0) {
+  plot_data_precip <- allele_freq_results %>%
+    filter(SNP %in% top_precip_snps$SNP) %>%
+    mutate(SNP_label = paste0(SNP, "\nr = ", 
+                              round(correlation_results$Cor_Precipitation[match(SNP, correlation_results$SNP)], 2)))
+  
+  p_precip <- ggplot(plot_data_precip, aes(x = Mean_BIO12, y = Allele_Freq, color = Population)) +
+    geom_point(size = 3, alpha = 0.7) +
+    geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed", size = 1) +
+    facet_wrap(~SNP_label, scales = "free", ncol = 3) +
+    scale_color_viridis(discrete = TRUE, option = "turbo") +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "bottom",
+          strip.text = element_text(size = 9, face = "bold"),
+          strip.background = element_rect(fill = "lightgray"),
+          axis.title = element_text(size = 12, face = "bold"),
+          plot.title = element_text(size = 14, face = "bold", hjust = 0.5)) +
+    labs(title = "Allele Frequency vs Precipitation",
+         x = "Annual Precipitation (mm)",
+         y = "Alternative Allele Frequency",
+         color = "Population")
+  
+  precip_file <- file.path(AF_OUTPUT_DIR, "allele_freq_vs_precipitation.png")
+  ggsave(precip_file, p_precip, width = 14, height = 10, dpi = 300)
+  cat("    ✓ Saved:", basename(precip_file), "\n")
+}
+
+# --- VISUALIZATION 4: SUMMARY TABLE ---
+cat("  Creating presentation summary table...\n")
+
+summary_table <- correlation_results %>%
+  arrange(P_value_GWAS) %>%
+  head(20) %>%
+  mutate(
+    P_value_GWAS = format(P_value_GWAS, scientific = TRUE, digits = 2),
+    Effect = round(Effect, 4),
+    Cor_Temperature = round(Cor_Temperature, 3),
+    P_Temperature = format(P_Temperature, scientific = TRUE, digits = 2),
+    Cor_Precipitation = round(Cor_Precipitation, 3),
+    P_Precipitation = format(P_Precipitation, scientific = TRUE, digits = 2)
+  ) %>%
+  select(SNP, Trait, P_value_GWAS, Effect, Model, Cor_Temperature, P_Temperature, 
+         Cor_Precipitation, P_Precipitation)
+
+summary_file <- file.path(AF_OUTPUT_DIR, "presentation_summary_table.csv")
+fwrite(summary_table, summary_file)
+cat("    ✓ Saved:", basename(summary_file), "\n\n")
+
+# ================================================================================
+# FINAL SUMMARY
+# ================================================================================
+
+cat("================================================================================\n")
+cat("ANALYSIS COMPLETE!\n")
+cat("================================================================================\n\n")
+
+cat("Output directory:", AF_OUTPUT_DIR, "\n\n")
+
+cat("Files created:\n")
+cat("  DATA FILES:\n")
+cat("    1. allele_frequencies_by_population.csv\n")
+cat("    2. climate_correlations.csv\n")
+cat("    3. presentation_summary_table.csv\n\n")
+
+cat("  FIGURES:\n")
+cat("    1. allele_frequency_heatmap.png\n")
+if (nrow(top_temp_snps) > 0) cat("    2. allele_freq_vs_temperature.png\n")
+if (nrow(top_precip_snps) > 0) cat("    3. allele_freq_vs_precipitation.png\n")
+cat("\n")
+
+cat("Key Results:\n")
+cat("  - SNPs analyzed:", length(unique(allele_freq_results$SNP)), "\n")
+cat("  - Populations:", length(populations), "\n")
+cat("  - Samples:", length(common_samples), "\n")
+cat("  - Significant temperature correlations:", nrow(sig_temp_cor), "\n")
+cat("  - Significant precipitation correlations:", nrow(sig_precip_cor), "\n\n")
+
+cat("================================================================================\n")
+cat("Ready for your GWAS presentation!\n")
+cat("Open the PNG files to view your figures.\n")
+cat("================================================================================\n")
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
