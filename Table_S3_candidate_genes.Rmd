@@ -1,0 +1,98 @@
+---
+title: "Table S3 - Candidate Genes"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(flextable)
+library(officer)
+library(dplyr)
+```
+
+```{r table-s3}
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+genes <- data.frame(
+  SNP = c(
+    "SV01_504887537\n(BIO4, BIO7)",
+    "SV05_83807981\n(BIO4)", "",
+    "SV07_374076699\n(BIO9)", "",
+    "SJ07_471063769\n(BIO14, BIO17)", "", "",
+    "SJ01_223693185\n(BIO15)", "", "",
+    "SJ01_285040967\n(BIO4, BIO7)"
+  ),
+  Gene = c(
+    "Thint.01G0630500",
+    "Thint.05G0080100", "Thint.05G0080200",
+    "Thint.07G0411900", "Thint.07G0412000",
+    "Thint.07G0568000", "Thint.07G0568100", "Thint.07G0568200",
+    "Thint.01G0235200", "Thint.01G0235300", "Thint.01G0235400",
+    "Thint.01G0305400"
+  ),
+  Ortholog = c(
+    "AT4G01250 (WRKY22)",
+    "AT5G22880 (HTB2)", "No Arabidopsis ortholog identified",
+    "AT2G37430 (ZAT11)", "AT5G59790 (UFL/DUF966)",
+    "AT5G03100 (F-box)", "AT5G03100 (F-box)", "AT1G03230 (SAP1)",
+    "AT2G28410 (HIS1-3)", "AT2G28430 (HTB2)", "AT2G45530 (HTA6)",
+    "AT3G28480 (AtGCN2)"
+  ),
+  Function = c(
+    "WRKY domain transcription factor; MAPK-activated stress and defense signaling; mediates responses to biotic and abiotic stress",
+    "Core histone H2B; nucleosome assembly; H2B monoubiquitination linked to transcriptional activation and chromatin remodeling",
+    "Unknown function; no significant homology to Arabidopsis proteome (BLASTp E-value > 0.05, nr database)",
+    "C2H2 zinc finger transcription factor; abiotic stress response networks including temperature and osmotic stress",
+    "Upstream of FLC; involved in temperature-dependent vernalization and FLC regulation; developmental timing response to temperature",
+    "F-box/RNI-like superfamily protein; SCF E3 ubiquitin ligase component; mediates protein degradation via 26S proteasome",
+    "F-box/RNI-like superfamily protein; SCF E3 ubiquitin ligase component; mediates protein degradation via 26S proteasome",
+    "Stress Associated Protein 1; A20/AN1 zinc finger domains; confers tolerance to drought, temperature, and salinity stress",
+    "Drought- and ABA-inducible linker histone H1.3 variant; stress-responsive chromatin compaction; regulates DNA methylation and gene silencing",
+    "Core histone H2B variant; nucleosome assembly; post-translational modifications modulate chromatin accessibility and transcription",
+    "H2A.W histone variant; heterochromatin compaction; non-CG DNA methylation maintenance; co-regulates chromatin accessibility with linker histone H1",
+    "eIF2α kinase; senses amino acid starvation and stress signals; phosphorylates eIF2α to attenuate translation; involved in ABA homeostasis and stomatal immunity"
+  ),
+  stringsAsFactors = FALSE
+)
+
+# ── Table formatting ───────────────────────────────────────────────────────────
+ft <- flextable(genes) %>%
+  # Column widths (inches, landscape ~10" content width)
+  width(j = 1, width = 1.8) %>%
+  width(j = 2, width = 1.7) %>%
+  width(j = 3, width = 1.8) %>%
+  width(j = 4, width = 4.7) %>%
+  # Header labels
+  set_header_labels(
+    SNP      = "SNP (BioClim Variable)",
+    Gene     = "Candidate Gene",
+    Ortholog = "Arabidopsis Ortholog",
+    Function = "Function"
+  ) %>%
+  # Header style
+  bold(part = "header") %>%
+  color(part = "header", color = "white") %>%
+  bg(part = "header", bg = "#2E5FA3") %>%
+  # Alternating row shading
+  bg(i = seq(1, nrow(genes), 2), bg = "#EDF2F9", part = "body") %>%
+  bg(i = seq(2, nrow(genes), 2), bg = "white", part = "body") %>%
+  # Font
+  font(fontname = "Arial", part = "all") %>%
+  fontsize(size = 9, part = "all") %>%
+  fontsize(size = 10, part = "header") %>%
+  # Borders
+  border_outer(border = officer::fp_border(color = "#AAAAAA", width = 0.5)) %>%
+  border_inner_h(border = officer::fp_border(color = "#AAAAAA", width = 0.5)) %>%
+  border_inner_v(border = officer::fp_border(color = "#AAAAAA", width = 0.5)) %>%
+  # Cell padding
+  padding(padding.top = 4, padding.bottom = 4,
+          padding.left = 5, padding.right = 5, part = "all") %>%
+  # Vertical alignment
+  valign(valign = "top", part = "body") %>%
+  # Wrap text
+  set_table_properties(width = 1, layout = "autofit")
+
+ft
+```
+
+**Table S3 Notes.** Of 10 genome-wide significant SNPs identified (FDR < 0.05), 6 had annotated genes within the ±50 kb window. Four SNPs had no genes within ±50 kb: SS01_212548100 (BIO15), SV01_522436644 (BIO4/BIO15), SV03_332992142 (BIO3), and SJ05_446284944 (BIO14/BIO17). Arabidopsis orthologs identified from Phytozome v2.1 annotation file (Tintermedium_503_v2.1.P14.annotation_info.txt). Thint.05G0080200 confirmed as lacking an Arabidopsis ortholog by BLASTp against the NCBI nr database (*Arabidopsis thaliana*, taxid:3702). BioClim variables: BIO3 = Isothermality; BIO4 = Temperature Seasonality; BIO7 = Temperature Annual Range; BIO9 = Mean Temperature of Driest Quarter; BIO14 = Precipitation of Driest Month; BIO15 = Precipitation Seasonality; BIO17 = Precipitation of Driest Quarter.

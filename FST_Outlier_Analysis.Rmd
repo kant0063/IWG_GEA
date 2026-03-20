@@ -1,0 +1,642 @@
+---
+title: "FST_outlier_analysis"
+author: "Elizabeth Campbell"
+date: "2026-02-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#===============================================================================
+# FST OUTLIER ANALYSIS FOR CLIMATE-ASSOCIATED SNPs
+# 
+# Analysis of Population Differentiation at Climate Adaptation Loci
+# in Intermediate Wheatgrass (Thinopyrum intermedium)
+#
+# Author: Elizabeth Campbell-Strupp
+# Affiliation: Department of Tropical Plant and Soil Sciences,
+#              University of Hawaii at Manoa
+# Date: 2/3/2026
+#
+# Description: Calculates FST for climate-associated SNPs to identify signatures
+#              of divergent selection across six genetic populations. Uses Weir 
+#              and Cockerham's (1984) method to quantify population differentiation.
+#
+# References: 
+#   - Weir & Cockerham (1984) Evolution 38:1358-1370
+#   - Holsinger & Weir (2009) Nat Rev Genet 10:639-650
+#===============================================================================
+
+#===============================================================================
+# 1. SETUP AND CONFIGURATION
+#===============================================================================
+
+# Load required libraries
+library(dplyr)          # Data manipulation
+library(tidyr)          # Data tidying
+library(ggplot2)        # Publication-quality graphics
+library(scales)         # Plot scaling functions
+
+# Set working directory - MODIFY THIS PATH FOR YOUR SYSTEM
+BASE_DIR <- "path/to/your/data"
+setwd(BASE_DIR)
+
+# Input file paths
+GENOTYPE_FILE <- "IWG_numeric_genotype.txt"         # Numeric genotype matrix (0/1/2)
+PCA_CLUSTERS_FILE <- "IWG_pca_with_clusters.csv"    # Population assignments (K=6)
+SIGNIFICANT_SNPS_FILE <- "GWAS_significant_SNPs_Q+K_model.csv"  # Climate-associated SNPs
+
+# Output directory
+OUTPUT_DIR <- "FST_Analysis"
+if (!dir.exists(OUTPUT_DIR)) dir.create(OUTPUT_DIR)
+
+# FST classification thresholds (Holsinger & Weir, 2009)
+THRESHOLD_HIGH <- 0.15        # High differentiation
+THRESHOLD_EXTREME <- 0.35     # Extreme outlier (strong divergent selection)
+
+cat("================================================================================\n")
+cat("FST OUTLIER ANALYSIS FOR CLIMATE-ASSOCIATED SNPs\n")
+cat("================================================================================\n\n")
+
+#===============================================================================
+# 2. DATA LOADING AND PREPARATION
+#===============================================================================
+
+cat("STEP 1: Loading data...\n")
+cat("--------------------------------------------------------------------------------\n\n")
+
+# Load genotype matrix (SNPs × samples)
+# Format: Rows = SNPs, Columns = samples, Values = 0/1/2 (allele dosage)
+genotype <- read.table(GENOTYPE_FILE, 
+                       header = TRUE, 
+                       row.names = 1, 
+                       check.names = FALSE)
+
+# Load population assignments from HCPC clustering
+pca_clusters <- read.csv(PCA_CLUSTERS_FILE)
+
+# Load significant SNPs from GWAS (Q+K model)
+sig_snps <- read.csv(SIGNIFICANT_SNPS_FILE)
+
+# Extract unique marker names from significant SNPs
+sig_markers <- unique(sig_snps$marker)
+cat(sprintf("Number of climate-associated SNPs: %d\n", length(sig_markers)))
+cat(sprintf("Number of populations (K): %d\n", length(unique(pca_clusters$clust))))
+cat(sprintf("Total genotyped samples: %d\n\n", ncol(genotype)))
+
+# Filter genotype matrix to significant SNPs only
+genotype_sig <- genotype[sig_markers, ]
+
+# Ensure sample names match between genotype and population data
+# Column name in pca_clusters should be adjusted based on your file
+pop_sample_col <- "sample.id"  # Adjust if different in your file
+cluster_col <- "clust"          # Adjust if different in your file
+
+common_samples <- intersect(colnames(genotype_sig), pca_clusters[[pop_sample_col]])
+genotype_sig <- genotype_sig[, common_samples]
+pca_clusters_filtered <- pca_clusters[pca_clusters[[pop_sample_col]] %in% common_samples, ]
+
+cat(sprintf("Samples with both genotype and population data: %d\n", length(common_samples)))
+cat(sprintf("SNPs retained for analysis: %d\n\n", nrow(genotype_sig)))
+
+# Display population sizes
+pop_sizes <- table(pca_clusters_filtered[[cluster_col]])
+cat("Population sizes:\n")
+for (i in 1:length(pop_sizes)) {
+  cat(sprintf("  Population %d: n = %d\n", i, pop_sizes[i]))
+}
+cat("\n")
+
+#===============================================================================
+# 3. CALCULATE ALLELE FREQUENCIES BY POPULATION
+#===============================================================================
+
+cat("================================================================================\n")
+cat("STEP 2: Calculating allele frequencies by population\n")
+cat("================================================================================\n\n")
+
+# Initialize results dataframe
+allele_freq_by_pop <- data.frame()
+
+# Loop through each significant SNP
+for (marker in sig_markers) {
+  
+  # Extract genotype vector for this marker (0/1/2 coding)
+  marker_geno <- as.numeric(genotype_sig[marker, ])
+  
+  # Calculate allele frequencies for each population
+  for (pop in sort(unique(pca_clusters_filtered[[cluster_col]]))) {
+    
+    # Identify samples in this population
+    pop_sample_ids <- pca_clusters_filtered[[pop_sample_col]][
+      pca_clusters_filtered[[cluster_col]] == pop
+    ]
+    pop_indices <- which(colnames(genotype_sig) %in% pop_sample_ids)
+    
+    # Extract genotypes for this population
+    pop_geno <- marker_geno[pop_indices]
+    pop_geno_clean <- pop_geno[!is.na(pop_geno)]
+    
+    # Skip if no data for this population
+    if (length(pop_geno_clean) == 0) next
+    
+    # Calculate allele frequency
+    # In 0/1/2 coding: 0 = ref/ref, 1 = ref/alt, 2 = alt/alt
+    n_samples <- length(pop_geno_clean)
+    n_alleles <- n_samples * 2  # Diploid
+    alt_allele_count <- sum(pop_geno_clean)  # Total alternate alleles
+    alt_allele_freq <- alt_allele_count / n_alleles
+    
+    # Store results
+    allele_freq_by_pop <- rbind(allele_freq_by_pop, data.frame(
+      marker = marker,
+      population = paste0("Pop_", pop),
+      n_samples = n_samples,
+      n_alleles = n_alleles,
+      alt_count = alt_allele_count,
+      alt_freq = alt_allele_freq,
+      ref_freq = 1 - alt_allele_freq
+    ))
+  }
+}
+
+# Summary statistics
+cat("Allele frequency calculation complete\n\n")
+cat("Summary by population:\n")
+freq_summary <- allele_freq_by_pop %>%
+  group_by(population) %>%
+  summarise(
+    n_samples = first(n_samples),
+    mean_alt_freq = mean(alt_freq),
+    min_alt_freq = min(alt_freq),
+    max_alt_freq = max(alt_freq),
+    .groups = "drop"
+  ) %>%
+  arrange(population)
+
+for (i in 1:nrow(freq_summary)) {
+  cat(sprintf("  %s: n = %d, mean freq = %.3f (range: %.3f - %.3f)\n",
+              freq_summary$population[i],
+              freq_summary$n_samples[i],
+              freq_summary$mean_alt_freq[i],
+              freq_summary$min_alt_freq[i],
+              freq_summary$max_alt_freq[i]))
+}
+cat("\n")
+
+#===============================================================================
+# 4. CALCULATE FST USING WEIR & COCKERHAM (1984)
+#===============================================================================
+
+cat("================================================================================\n")
+cat("STEP 3: Calculating FST (Weir & Cockerham 1984)\n")
+cat("================================================================================\n\n")
+
+cat("Method: FST = (HT - HS) / HT\n")
+cat("  HT = Total expected heterozygosity (2p(1-p) using global frequency)\n")
+cat("  HS = Average expected heterozygosity within populations\n\n")
+
+# Initialize results dataframe
+fst_results <- data.frame()
+
+# Calculate FST for each marker
+for (marker in unique(allele_freq_by_pop$marker)) {
+  
+  # Extract data for this marker across all populations
+  marker_data <- allele_freq_by_pop %>%
+    filter(marker == !!marker)
+  
+  # Need at least 2 populations
+  if (nrow(marker_data) < 2) next
+  
+  # Calculate global allele frequency (across all populations)
+  total_alt_alleles <- sum(marker_data$alt_count)
+  total_alleles <- sum(marker_data$n_alleles)
+  p_global <- total_alt_alleles / total_alleles  # Global alternate allele frequency
+  
+  n_pops <- nrow(marker_data)
+  
+  # HT: Total expected heterozygosity using global frequency
+  # Formula: HT = 2 * p * (1 - p)
+  # This represents expected heterozygosity if all populations were panmictic
+  H_T <- 2 * p_global * (1 - p_global)
+  
+  # HS: Average expected heterozygosity within populations
+  # Average of 2 * p_i * (1 - p_i) across all populations
+  H_S <- 0
+  for (i in 1:nrow(marker_data)) {
+    p_i <- marker_data$alt_freq[i]  # Population-specific frequency
+    H_S <- H_S + (2 * p_i * (1 - p_i))
+  }
+  H_S <- H_S / n_pops
+  
+  # Calculate FST
+  # FST = (HT - HS) / HT
+  # Interpretation: Proportion of total genetic variance due to population structure
+  if (H_T > 0) {
+    fst <- (H_T - H_S) / H_T
+  } else {
+    fst <- 0  # No variation at this locus
+  }
+  
+  # Calculate variance in allele frequencies across populations
+  # Higher variance indicates stronger population differentiation
+  freq_variance <- var(marker_data$alt_freq)
+  freq_range <- max(marker_data$alt_freq) - min(marker_data$alt_freq)
+  
+  # Store results
+  fst_results <- rbind(fst_results, data.frame(
+    marker = marker,
+    FST = fst,
+    global_freq = p_global,
+    H_T = H_T,
+    H_S = H_S,
+    freq_variance = freq_variance,
+    freq_range = freq_range,
+    n_pops = n_pops
+  ))
+}
+
+# Sort by FST (highest to lowest)
+fst_results <- fst_results %>%
+  arrange(desc(FST))
+
+cat(sprintf("FST calculated for %d SNPs\n\n", nrow(fst_results)))
+
+#===============================================================================
+# 5. CLASSIFY OUTLIERS BASED ON FST THRESHOLDS
+#===============================================================================
+
+cat("================================================================================\n")
+cat("STEP 4: FST classification (Holsinger & Weir 2009)\n")
+cat("================================================================================\n\n")
+
+# Calculate summary statistics
+fst_mean <- mean(fst_results$FST)
+fst_median <- median(fst_results$FST)
+fst_sd <- sd(fst_results$FST)
+fst_min <- min(fst_results$FST)
+fst_max <- max(fst_results$FST)
+
+cat("FST distribution summary:\n")
+cat(sprintf("  Mean:   %.3f\n", fst_mean))
+cat(sprintf("  Median: %.3f\n", fst_median))
+cat(sprintf("  SD:     %.3f\n", fst_sd))
+cat(sprintf("  Range:  %.3f - %.3f\n\n", fst_min, fst_max))
+
+# Classify SNPs based on FST thresholds
+fst_results <- fst_results %>%
+  mutate(
+    classification = case_when(
+      FST > THRESHOLD_EXTREME ~ "Extreme outlier",
+      FST > THRESHOLD_HIGH ~ "High differentiation",
+      TRUE ~ "Normal"
+    ),
+    interpretation = case_when(
+      FST > THRESHOLD_EXTREME ~ "Strong divergent selection",
+      FST > THRESHOLD_HIGH ~ "Moderate divergent selection",
+      TRUE ~ "Parallel adaptation"
+    )
+  )
+
+# Summary by classification
+cat("Classification results:\n")
+cat(sprintf("  Threshold for high differentiation: FST > %.2f\n", THRESHOLD_HIGH))
+cat(sprintf("  Threshold for extreme outliers: FST > %.2f\n\n", THRESHOLD_EXTREME))
+
+classification_summary <- fst_results %>%
+  group_by(classification, interpretation) %>%
+  summarise(
+    n = n(),
+    percentage = n() / nrow(fst_results) * 100,
+    mean_fst = mean(FST),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_fst))
+
+for (i in 1:nrow(classification_summary)) {
+  cat(sprintf("  %s (FST = %.3f):\n", 
+              classification_summary$classification[i],
+              classification_summary$mean_fst[i]))
+  cat(sprintf("    %d SNPs (%.1f%%)\n",
+              classification_summary$n[i],
+              classification_summary$percentage[i]))
+  cat(sprintf("    Interpretation: %s\n\n",
+              classification_summary$interpretation[i]))
+}
+
+# Display top FST outliers
+cat("Top 10 FST outliers:\n")
+top_outliers <- fst_results %>%
+  arrange(desc(FST)) %>%
+  head(10)
+
+for (i in 1:nrow(top_outliers)) {
+  cat(sprintf("  %2d. %-20s FST = %.3f  [%s]\n",
+              i,
+              top_outliers$marker[i],
+              top_outliers$FST[i],
+              top_outliers$classification[i]))
+}
+cat("\n")
+
+#===============================================================================
+# 6. BIOLOGICAL INTERPRETATION
+#===============================================================================
+
+cat("================================================================================\n")
+cat("BIOLOGICAL INTERPRETATION\n")
+cat("================================================================================\n\n")
+
+n_extreme <- sum(fst_results$classification == "Extreme outlier")
+n_high <- sum(fst_results$classification == "High differentiation")
+n_normal <- sum(fst_results$classification == "Normal")
+
+pct_divergent <- (n_extreme + n_high) / nrow(fst_results) * 100
+
+cat("Overall interpretation:\n\n")
+
+if (fst_mean < 0.05) {
+  cat("  Overall FST < 0.05: LOW population differentiation\n")
+  cat("  → Populations are genetically similar at climate-associated loci\n")
+  cat("  → Adaptation through shared standing genetic variation\n")
+  cat("  → Parallel evolution across climatic gradients\n\n")
+} else if (fst_mean < 0.15) {
+  cat("  Overall FST = 0.05-0.15: MODERATE population differentiation\n")
+  cat("  → Some population structure at climate-associated loci\n")
+  cat("  → Mix of parallel and divergent adaptation\n\n")
+} else {
+  cat("  Overall FST > 0.15: HIGH population differentiation\n")
+  cat("  → Strong population structure at climate-associated loci\n")
+  cat("  → Predominantly divergent selection across populations\n\n")
+}
+
+cat(sprintf("Divergent selection signature: %.1f%% of climate-associated SNPs\n", 
+            pct_divergent))
+cat(sprintf("  - Extreme outliers (FST > 0.35): %d SNPs (%.1f%%)\n",
+            n_extreme, n_extreme/nrow(fst_results)*100))
+cat(sprintf("    → Strong divergent selection (population-specific adaptations)\n\n"))
+cat(sprintf("  - High differentiation (FST > 0.15): %d SNPs (%.1f%%)\n",
+            n_high, n_high/nrow(fst_results)*100))
+cat(sprintf("    → Moderate divergent selection (regional adaptations)\n\n"))
+cat(sprintf("  - Normal differentiation (FST ≤ 0.15): %d SNPs (%.1f%%)\n",
+            n_normal, n_normal/nrow(fst_results)*100))
+cat(sprintf("    → Parallel adaptation (shared standing variation)\n\n"))
+
+#===============================================================================
+# 7. EXPORT RESULTS
+#===============================================================================
+
+cat("================================================================================\n")
+cat("EXPORTING RESULTS\n")
+cat("================================================================================\n\n")
+
+# Export FST results
+fst_output <- fst_results %>%
+  select(marker, FST, classification, interpretation, 
+         global_freq, freq_variance, freq_range, H_T, H_S)
+
+write.csv(fst_output, 
+          file.path(OUTPUT_DIR, "FST_results_climate_SNPs.csv"),
+          row.names = FALSE)
+
+# Export allele frequencies
+write.csv(allele_freq_by_pop,
+          file.path(OUTPUT_DIR, "Allele_frequencies_by_population.csv"),
+          row.names = FALSE)
+
+# Export summary table for manuscript
+manuscript_summary <- fst_results %>%
+  filter(FST > THRESHOLD_HIGH) %>%  # Only outliers
+  arrange(desc(FST)) %>%
+  select(marker, FST, classification, global_freq, freq_range)
+
+write.csv(manuscript_summary,
+          file.path(OUTPUT_DIR, "FST_outliers_for_manuscript.csv"),
+          row.names = FALSE)
+
+cat("Results exported:\n")
+cat(sprintf("  1. %s/FST_results_climate_SNPs.csv\n", OUTPUT_DIR))
+cat(sprintf("  2. %s/Allele_frequencies_by_population.csv\n", OUTPUT_DIR))
+cat(sprintf("  3. %s/FST_outliers_for_manuscript.csv\n", OUTPUT_DIR))
+cat("\n")
+
+#===============================================================================
+# 8. VISUALIZATION
+#===============================================================================
+
+cat("================================================================================\n")
+cat("CREATING PUBLICATION-QUALITY FIGURES\n")
+cat("================================================================================\n\n")
+
+# Set color palette for classifications
+classification_colors <- c(
+  "Extreme outlier" = "#d62728",        # Red
+  "High differentiation" = "#ff7f0e",   # Orange
+  "Normal" = "#7f7f7f"                  # Gray
+)
+
+#-------------------------------------------------------------------------------
+# Figure 1: FST Distribution Histogram
+#-------------------------------------------------------------------------------
+
+p1 <- ggplot(fst_results, aes(x = FST, fill = classification)) +
+  geom_histogram(bins = 20, color = "black", alpha = 0.8) +
+  geom_vline(xintercept = THRESHOLD_HIGH, 
+             linetype = "dashed", 
+             color = "#ff7f0e", 
+             linewidth = 1) +
+  geom_vline(xintercept = THRESHOLD_EXTREME, 
+             linetype = "dashed", 
+             color = "#d62728", 
+             linewidth = 1) +
+  annotate("text", x = THRESHOLD_HIGH, y = Inf, 
+           label = paste0("FST = ", THRESHOLD_HIGH), 
+           vjust = 1.5, hjust = 1.1, size = 3.5, color = "#ff7f0e") +
+  annotate("text", x = THRESHOLD_EXTREME, y = Inf, 
+           label = paste0("FST = ", THRESHOLD_EXTREME), 
+           vjust = 1.5, hjust = 1.1, size = 3.5, color = "#d62728") +
+  scale_fill_manual(values = classification_colors,
+                    name = "Classification") +
+  labs(
+    title = "Distribution of FST at Climate-Associated Loci",
+    subtitle = sprintf("n = %d SNPs across %d populations", 
+                      nrow(fst_results), 
+                      length(unique(pca_clusters_filtered[[cluster_col]]))),
+    x = expression(paste("F"[ST])),
+    y = "Number of SNPs"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 11),
+    legend.position = "right",
+    legend.background = element_rect(fill = "white", color = "black"),
+    axis.text = element_text(color = "black"),
+    axis.ticks = element_line(color = "black")
+  )
+
+ggsave(file.path(OUTPUT_DIR, "Figure_FST_distribution.pdf"), 
+       p1, width = 8, height = 6, dpi = 300)
+
+ggsave(file.path(OUTPUT_DIR, "Figure_FST_distribution.png"), 
+       p1, width = 8, height = 6, dpi = 300)
+
+#-------------------------------------------------------------------------------
+# Figure 2: FST vs Global Allele Frequency
+#-------------------------------------------------------------------------------
+
+p2 <- ggplot(fst_results, aes(x = global_freq, y = FST, 
+                               color = classification,
+                               shape = classification)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_hline(yintercept = THRESHOLD_HIGH, 
+             linetype = "dashed", 
+             color = "#ff7f0e",
+             linewidth = 0.8) +
+  geom_hline(yintercept = THRESHOLD_EXTREME, 
+             linetype = "dashed", 
+             color = "#d62728",
+             linewidth = 0.8) +
+  scale_color_manual(values = classification_colors,
+                     name = "Classification") +
+  scale_shape_manual(values = c(16, 17, 15),
+                     name = "Classification") +
+  labs(
+    title = expression(paste("F"[ST], " vs. Global Allele Frequency")),
+    subtitle = "Climate-associated SNPs across six genetic populations",
+    x = "Global Allele Frequency",
+    y = expression(paste("F"[ST]))
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 11),
+    legend.position = "bottom",
+    legend.background = element_rect(fill = "white", color = "black"),
+    axis.text = element_text(color = "black"),
+    axis.ticks = element_line(color = "black")
+  )
+
+ggsave(file.path(OUTPUT_DIR, "Figure_FST_vs_frequency.pdf"), 
+       p2, width = 8, height = 6, dpi = 300)
+
+ggsave(file.path(OUTPUT_DIR, "Figure_FST_vs_frequency.png"), 
+       p2, width = 8, height = 6, dpi = 300)
+
+#-------------------------------------------------------------------------------
+# Figure 3: Allele Frequency Heatmap (Top Outliers)
+#-------------------------------------------------------------------------------
+
+# Select top 15 FST outliers for visualization
+top_n_markers <- 15
+top_markers <- fst_results %>%
+  arrange(desc(FST)) %>%
+  head(top_n_markers) %>%
+  pull(marker)
+
+# Prepare data for heatmap
+heatmap_data <- allele_freq_by_pop %>%
+  filter(marker %in% top_markers) %>%
+  mutate(marker = factor(marker, levels = top_markers))
+
+p3 <- ggplot(heatmap_data, aes(x = population, y = marker, fill = alt_freq)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.2f", alt_freq)), 
+            size = 3, color = "white") +
+  scale_fill_gradient2(low = "#2166ac", mid = "white", high = "#b2182b",
+                       midpoint = 0.5,
+                       name = "Allele\nFrequency") +
+  labs(
+    title = paste0("Allele Frequencies at Top ", top_n_markers, " FST Outliers"),
+    subtitle = "Across six genetic populations",
+    x = "Population",
+    y = "SNP"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 11),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black", size = 9),
+    panel.grid = element_blank()
+  )
+
+ggsave(file.path(OUTPUT_DIR, "Figure_FST_allele_freq_heatmap.pdf"), 
+       p3, width = 10, height = 8, dpi = 300)
+
+ggsave(file.path(OUTPUT_DIR, "Figure_FST_allele_freq_heatmap.png"), 
+       p3, width = 10, height = 8, dpi = 300)
+
+cat("Figures exported:\n")
+cat(sprintf("  1. %s/Figure_FST_distribution.pdf\n", OUTPUT_DIR))
+cat(sprintf("  2. %s/Figure_FST_vs_frequency.pdf\n", OUTPUT_DIR))
+cat(sprintf("  3. %s/Figure_FST_allele_freq_heatmap.pdf\n", OUTPUT_DIR))
+cat("\n")
+
+#===============================================================================
+# 9. SUMMARY STATISTICS FOR MANUSCRIPT
+#===============================================================================
+
+cat("================================================================================\n")
+cat("SUMMARY FOR MANUSCRIPT\n")
+cat("================================================================================\n\n")
+
+cat("Key findings:\n\n")
+
+cat(sprintf("1. FST distribution:\n"))
+cat(sprintf("   - Mean FST = %.3f ± %.3f (SD)\n", fst_mean, fst_sd))
+cat(sprintf("   - Range: %.3f - %.3f\n\n", fst_min, fst_max))
+
+cat(sprintf("2. Classification of %d climate-associated SNPs:\n", nrow(fst_results)))
+cat(sprintf("   - Extreme outliers (FST > 0.35): %d (%.1f%%)\n",
+            n_extreme, n_extreme/nrow(fst_results)*100))
+cat(sprintf("   - High differentiation (FST > 0.15): %d (%.1f%%)\n",
+            n_high, n_high/nrow(fst_results)*100))
+cat(sprintf("   - Normal differentiation (FST ≤ 0.15): %d (%.1f%%)\n\n",
+            n_normal, n_normal/nrow(fst_results)*100))
+
+cat(sprintf("3. Biological interpretation:\n"))
+if (pct_divergent > 50) {
+  cat(sprintf("   - Predominantly divergent selection (%.1f%% with FST > 0.15)\n", 
+              pct_divergent))
+  cat("   - Populations have adapted to local climates through different alleles\n")
+} else {
+  cat(sprintf("   - Predominantly parallel adaptation (%.1f%% with FST ≤ 0.15)\n",
+              100 - pct_divergent))
+  cat("   - Populations share adaptive alleles (standing genetic variation)\n")
+}
+
+cat("\n================================================================================\n")
+cat("FST OUTLIER ANALYSIS COMPLETE\n")
+cat("================================================================================\n\n")
+
+cat("All results have been saved to:", OUTPUT_DIR, "\n\n")
+
+#===============================================================================
+# END OF SCRIPT
+#===============================================================================
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

@@ -1,0 +1,467 @@
+---
+title: "LFMM"
+output: pdf_document
+date: "2025-09-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries
+
+```{r}
+library(lfmm)
+library(vcfR)
+library(dplyr)
+library(ggplot2)
+```
+
+## Load in the Data
+
+```{r}
+# Read VCF file and extract genotypes
+vcf <- read.vcfR("IWG_PI.vcf")
+gt <- extract.gt(vcf, return.alleles = TRUE)
+
+# Method 1: Using extract.gt with element parameter (recommended)
+# This directly extracts genotypes as numeric matrix
+gt_numeric <- extract.gt(vcf, element = "GT", as.numeric = TRUE)
+```
+
+# Load environemntal 
+```{r}
+env_data <- read.csv("IWG_bioclim.csv", header = TRUE, stringsAsFactors = FALSE)
+
+cc<-env_data[,1:3]
+which(!complete.cases(cc)) # indentify which accessions have lat/long coordinates
+
+rows_to_remove<-c(1,   2,   3,   4,   5,  21,  39,  40,  42,  45,  46,  47,  48,  50,  
+                  56,  57,  58,  59,  60,  62,  65,  70,  71,  81, 307, 318, 319, 320, 321, 325, 327, 328,                    329, 330, 331)
+env_data_clean <- env_data[-rows_to_remove, ]
+```
+
+#pull the first variable latitude from the environemntal data
+```{r}
+Latitude_data <- as.matrix(env_data_clean[ , "Latitude", drop = FALSE])
+Latitude_data[is.na(Latitude_data)] <- mean(Latitude_data, na.rm = TRUE)
+
+```
+
+#match genotype and environmental data
+```{r}
+# 1. Check dimensions first
+cat("VCF samples:", ncol(gt_numeric), "\n")
+cat("CSV rows:", nrow(env_data_clean), "\n")
+
+# 2. Find common samples
+vcf_samples <- colnames(gt_numeric)
+csv_samples <- env_data_clean$PI_Accession  # adjust column name
+
+common_samples <- intersect(vcf_samples, csv_samples)
+cat("Common samples:", length(common_samples), "\n")
+
+# 3. Subset both datasets to common samples
+gt_matched <- gt_numeric[, colnames(gt_numeric) %in% common_samples]
+csv_matched <- env_data_clean[env_data_clean$PI_Accession %in% common_samples, ]
+
+# 4. Ensure same sample order
+csv_matched <- csv_matched[match(colnames(gt_matched), csv_matched$PI_Accession), ]
+
+```
+
+# Impute missing values in genotype_data
+```{r}
+genotype_data<-gt_matched
+genotype_data <- apply(genotype_data, 2, function(x) ifelse(is.na(x), mean(x, na.rm = TRUE), x))
+genotype_data <- t(genotype_data)
+
+```
+
+# Run the LFMM
+```{r}
+#mod.lfmm <- lfmm_ridge(Y = genotype_data, X = Latitude_data, K = 1)
+mod.lfmm <- lfmm_ridge(Y = genotype_data, X = Latitude_data, K = 6)
+pv <- lfmm_test(Y = genotype_data, X = Latitude_data, lfmm = mod.lfmm)
+lfmm_results <- data.frame(SNP = 1:ncol(genotype_data), p_value = pv$pvalue[, 1], log_p = -log10(pv$pvalue[, 1]))
+
+```
+
+# Extract position and chromosome info
+```{r}
+lfmm_results <- cbind(lfmm_results, chromosome = as.factor(vcf@fix[, "CHROM"]), pos = as.numeric(vcf@fix[, "POS"]))
+```
+
+# Define chromosome lengths based on reference for correct cumulative positioning
+```{r}
+chromosome_lengths <- c(
+  "J01" = 548726614,
+  "J02" = 694191331,
+  "J03" = 664523050,
+  "J04" = 541250370 ,
+  "J05" = 602542912,
+  "J06" = 566711382,
+  "J07" = 686173349,
+  "S01" = 422989602,
+  "S02" = 507709987,
+  "S03" = 493345210,
+  "S04" = 377353484,
+  "S05" = 549394082,
+  "S06" = 408503727,
+  "S07" = 482783349,
+  "V01" = 574115619,
+  "V02" = 618570211,
+  "V03" = 526408016,
+  "V04" = 440983052,
+  "V05" = 591402192,
+  "V06" = 462045100,
+  "V07" = 761377749 
+)
+cumulative_starts <- c(0, cumsum(chromosome_lengths[-length(chromosome_lengths)]))
+```
+
+# Map chromosomes and compute cumulative positions
+```{r}
+chromosome_mapping <- setNames(1:21, names(chromosome_lengths))
+lfmm_results <- lfmm_results %>%
+  mutate(
+    chromosome_numeric = chromosome_mapping[as.character(chromosome)],
+    cumulative_pos = pos + cumulative_starts[chromosome_numeric]
+  ) %>%
+  arrange(chromosome_numeric, cumulative_pos)
+
+# Define significance thresholds
+significance_threshold <- -log10(0.001)  # 99th percentile threshold
+bonferroni_threshold <- -log10(0.05 / nrow(lfmm_results))  # Bonferroni threshold
+```
+
+# plot
+```{r}
+#asthetics
+library(RColorBrewer)
+library(MetBrewer)
+
+# Calculate midpoints for chromosome labels
+midpoints <- cumulative_starts + chromosome_lengths / 2
+
+# Define colors using the "VanGogh1" palette from MetBrewer
+chromosome_colors <- met.brewer("VanGogh1", n = length(unique(lfmm_results$chromosome_numeric)))
+
+
+# Define updated chromosome labels with prefixes
+chromosome_labels <- paste0(c(1:21, "_", names(chromosome_mapping)))
+
+# Plot with cumulative positions, 99th percentile line, Bonferroni threshold, and customized labels
+# Define updated chromosome labels with prefixes
+chromosome_labels <- paste0(c(1:21), "_", names(chromosome_mapping))
+
+# Perform FDR adjustment on p-values
+lfmm_results$fdr_p_value <- p.adjust(lfmm_results$p_value, method = "BH")
+
+# Convert FDR-adjusted p-values to -log10 scale
+lfmm_results$log_fdr_p <- -log10(lfmm_results$fdr_p_value)
+
+# Define the FDR significance threshold 
+fdr_threshold <- -log10(0.001)
+
+# Plot with cumulative positions, 99th percentile line, FDR threshold, and customized labels
+p <- ggplot(lfmm_results, aes(x = cumulative_pos, y = log_p, color = as.factor(chromosome_numeric))) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = bonferroni_threshold, color = "red", linetype = "dashed") +  # bonferonni
+  geom_hline(yintercept = fdr_threshold, color = "purple", linetype = "dashed") +  # FDR threshold
+  labs(
+    title = "SNP Outliers for Latitude for All Groupings",
+    x = "Cumulative Genomic Position",
+    y = "-log10(p-value)",
+    color = "Chromosome"
+  ) +
+  # Add lines to separate chromosomes
+  geom_vline(xintercept = cumulative_starts[-1], color = "grey", linetype = "dotted", size = 0.5) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 8),
+    plot.title = element_text(size = 10)
+  ) +
+  scale_x_continuous(
+    breaks = cumulative_starts + chromosome_lengths / 2,
+    labels = chromosome_labels
+  ) +
+  scale_color_manual(values = chromosome_colors)
+
+p
+```
+
+# loop through all environmental variables
+```{r}
+# Identify environmental columns (exclude non-environmental columns)
+# Adjust these column names based on your actual CSV structure
+exclude_cols <- c("PI_Accession", "Latitude", "Longitude", "Cultivar_Name", "ID")  # Add other non-environmental columns as needed
+env_cols <- setdiff(colnames(csv_matched), exclude_cols)
+
+# Initialize list to store results
+all_lfmm_results <- list()
+
+# Loop through all environmental variables
+for (env_var in env_cols) {
+  cat("Processing environmental variable:", env_var, "\n")
+  
+  # Extract current environmental variable
+  env_matrix <- as.matrix(csv_matched[, env_var, drop = FALSE])
+  
+  # Handle missing values - impute with mean
+  env_matrix[is.na(env_matrix)] <- mean(env_matrix, na.rm = TRUE)
+  
+  # Check if there's variation in the environmental variable
+  if (var(env_matrix, na.rm = TRUE) == 0) {
+    cat("Skipping", env_var, "- no variation in data\n")
+    next
+  }
+  
+  # Run LFMM
+  tryCatch({
+    # You can adjust K value as needed
+    mod.lfmm <- lfmm_ridge(Y = genotype_data, X = env_matrix, K = 6)
+    pv <- lfmm_test(Y = genotype_data, X = env_matrix, lfmm = mod.lfmm)
+    
+    # Store results with chromosome and position information
+    lfmm_results <- data.frame(
+      SNP = 1:ncol(genotype_data), 
+      p_value = pv$pvalue[, 1], 
+      log_p = -log10(pv$pvalue[, 1]),
+      env_variable = env_var
+    )
+    
+    # Add chromosome and position information
+    lfmm_results <- cbind(lfmm_results, 
+                         chromosome = as.factor(vcf@fix[, "CHROM"]), 
+                         pos = as.numeric(vcf@fix[, "POS"]))
+    
+    # Add results to list
+    all_lfmm_results[[env_var]] <- lfmm_results
+    
+    cat("Completed LFMM for", env_var, "\n")
+    
+  }, error = function(e) {
+    cat("Error processing", env_var, ":", e$message, "\n")
+  })
+}
+
+# Combine all results into one data frame
+if (length(all_lfmm_results) > 0) {
+  combined_results <- do.call(rbind, all_lfmm_results)
+  
+  # Add row names to identify the environmental variable
+  combined_results$result_id <- rownames(combined_results)
+  
+  # Save results
+  write.csv(combined_results, "lfmm_all_environmental_variables.csv", row.names = FALSE)
+  
+  cat("Analysis complete! Results saved to 'lfmm_all_environmental_variables.csv'\n")
+  cat("Total environmental variables processed:", length(all_lfmm_results), "\n")
+  
+  # Print summary
+  cat("\nSummary of results:\n")
+  for (env_var in names(all_lfmm_results)) {
+    n_significant <- sum(all_lfmm_results[[env_var]]$p_value < 0.05, na.rm = TRUE)
+    cat(env_var, ": ", n_significant, " significant SNPs (p < 0.05)\n")
+  }
+  
+} else {
+  cat("No environmental variables were successfully processed.\n")
+}
+
+# Optional: Create individual result files for each environmental variable
+if (length(all_lfmm_results) > 0) {
+  for (env_var in names(all_lfmm_results)) {
+    filename <- paste0("lfmm_", env_var, ".csv")
+    write.csv(all_lfmm_results[[env_var]], filename, row.names = FALSE)
+  }
+  cat("Individual result files also created for each environmental variable.\n")
+}
+```
+
+###joint plot
+```{r}
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+library(RColorBrewer)
+library(MetBrewer)
+
+# Define chromosome lengths based on reference for correct cumulative positioning
+chromosome_lengths <- c(
+  "J01" = 548726614,
+  "J02" = 694191331,
+  "J03" = 664523050,
+  "J04" = 541250370,
+  "J05" = 602542912,
+  "J06" = 566711382,
+  "J07" = 686173349,
+  "S01" = 422989602,
+  "S02" = 507709987,
+  "S03" = 493345210,
+  "S04" = 377353484,
+  "S05" = 549394082,
+  "S06" = 408503727,
+  "S07" = 482783349,
+  "V01" = 574115619,
+  "V02" = 618570211,
+  "V03" = 526408016,
+  "V04" = 440983052,
+  "V05" = 591402192,
+  "V06" = 462045100,
+  "V07" = 761377749 
+)
+
+cumulative_starts <- c(0, cumsum(chromosome_lengths[-length(chromosome_lengths)]))
+
+# Map chromosomes and compute cumulative positions
+chromosome_mapping <- setNames(1:21, names(chromosome_lengths))
+
+# Process the combined results (assuming you have combined_results from the previous script)
+combined_results_processed <- combined_results %>%
+  mutate(
+    chromosome_numeric = chromosome_mapping[as.character(chromosome)],
+    cumulative_pos = pos + cumulative_starts[chromosome_numeric]
+  ) %>%
+  arrange(env_variable, chromosome_numeric, cumulative_pos)
+
+# Calculate significance thresholds for each environmental variable
+combined_results_processed <- combined_results_processed %>%
+  group_by(env_variable) %>%
+  mutate(
+    # Bonferroni threshold per environmental variable
+    bonferroni_threshold = -log10(0.05 / n()),
+    # FDR adjustment per environmental variable
+    fdr_p_value = p.adjust(p_value, method = "BH"),
+    log_fdr_p = -log10(fdr_p_value)
+  ) %>%
+  ungroup()
+
+# Define general significance thresholds
+general_significance_threshold <- -log10(0.001)  # 99th percentile threshold
+fdr_threshold <- -log10(0.01)  # FDR threshold
+
+# Calculate midpoints for chromosome labels
+midpoints <- cumulative_starts + chromosome_lengths / 2
+
+# Define colors using the "VanGogh1" palette from MetBrewer
+chromosome_colors <- met.brewer("VanGogh1", n = length(unique(combined_results_processed$chromosome_numeric)))
+
+# Define updated chromosome labels with prefixes
+chromosome_labels <- paste0(c(1:21), "_", names(chromosome_mapping))
+
+# Create the faceted Manhattan plot
+p <- ggplot(combined_results_processed, aes(x = cumulative_pos, y = log_p, color = as.factor(chromosome_numeric))) +
+  geom_point(alpha = 0.6, size = 0.5) +
+  # Add significance threshold lines
+  geom_hline(data = combined_results_processed %>% 
+               group_by(env_variable) %>% 
+               slice(1) %>% 
+               ungroup(), 
+             aes(yintercept = bonferroni_threshold), 
+             color = "red", linetype = "dashed", alpha = 0.7) +
+  geom_hline(yintercept = fdr_threshold, color = "purple", linetype = "dashed", alpha = 0.7) +
+  # Add lines to separate chromosomes
+  geom_vline(xintercept = cumulative_starts[-1], color = "grey", linetype = "dotted", size = 0.3, alpha = 0.5) +
+  # Facet by environmental variable
+  facet_wrap(~ env_variable, scales = "free_y", ncol = 3) +
+  labs(
+    title = "Manhattan Plots for All Environmental Variables",
+    x = "Cumulative Genomic Position",
+    y = "-log10(p-value)",
+    color = "Chromosome",
+    caption = "Red dashed line: Bonferroni threshold per variable; Purple dashed line: FDR threshold"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 6),
+    axis.text.y = element_text(size = 8),
+    plot.title = element_text(size = 12, hjust = 0.5),
+    strip.text = element_text(size = 8, face = "bold"),
+    plot.caption = element_text(size = 8, hjust = 0),
+    panel.spacing = unit(0.5, "lines")
+  ) +
+  scale_x_continuous(
+    breaks = cumulative_starts + chromosome_lengths / 2,
+    labels = chromosome_labels
+  ) +
+  scale_color_manual(values = chromosome_colors, guide = guide_legend(nrow = 2)) +
+  # Adjust y-axis to better show the data
+  coord_cartesian(expand = FALSE)
+
+# Display the plot
+p
+
+# Optional: Save the plot with appropriate dimensions
+ggsave("manhattan_plot_all_environmental_variables.png", 
+       plot = p, 
+       width = 16, 
+       height = 12, 
+       dpi = 300, 
+       units = "in")
+
+```
+
+```{r}
+# Print summary statistics for each environmental variable
+cat("Summary of significant SNPs per environmental variable:\n")
+summary_stats <- combined_results_processed %>%
+  group_by(env_variable) %>%
+  summarise(
+    total_snps = n(),
+    bonferroni_significant = sum(p_value < (0.05 / n()), na.rm = TRUE),
+    fdr_significant = sum(fdr_p_value < 0.01, na.rm = TRUE),
+    p_001_significant = sum(p_value < 0.001, na.rm = TRUE),
+    mean_log_p = round(mean(log_p, na.rm = TRUE), 3),
+    max_log_p = round(max(log_p, na.rm = TRUE), 3),
+    .groups = 'drop'
+  )
+
+print(summary_stats)
+
+#write.csv(summary_stats, "IWG_lfmm_summary.csv",row.names=F)
+
+# Optional: Create a summary plot showing number of significant SNPs per environmental variable
+summary_plot <- summary_stats %>%
+  select(env_variable, bonferroni_significant, fdr_significant, p_001_significant) %>%
+  tidyr::pivot_longer(cols = -env_variable, names_to = "threshold_type", values_to = "count") %>%
+  mutate(threshold_type = case_when(
+    threshold_type == "bonferroni_significant" ~ "Bonferroni",
+    threshold_type == "fdr_significant" ~ "FDR < 0.01",
+    threshold_type == "p_001_significant" ~ "p < 0.001"
+  )) %>%
+  ggplot(aes(x = env_variable, y = count, fill = threshold_type)) +
+  geom_col(position = "dodge", alpha = 0.8) +
+  labs(
+    title = "Number of Significant SNPs by Environmental Variable",
+    x = "Environmental Variable",
+    y = "Number of Significant SNPs",
+    fill = "Significance Threshold"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom"
+  ) +
+  scale_fill_brewer(type = "qual", palette = "Set2")
+
+# Display summary plot
+summary_plot
+
+# Save summary plot
+ggsave("significant_snps_summary.png", 
+       plot = summary_plot, 
+       width = 12, 
+       height = 6, 
+       dpi = 300, 
+       units = "in")
+```
+
+
+
+
+
+
