@@ -344,10 +344,10 @@ writeRaster(mean_raster, "~/R/Intermediate_Wheatgrass_collab/IWG_13_model_SDM_fu
 
 
 # Compute the standard deviation raster
-sd_raster <- calc(raster_stack, sd, na.rm = TRUE)
+#sd_raster <- calc(raster_stack, sd, na.rm = TRUE)
 # Plot the standard deviation raster
 #plot(sd_raster, main = "Standard Deviation of SDMs")
-writeRaster(sd_raster, "~/R/Intermediate_Wheatgrass_collab/IWG_SD_13_model_SDM_future_2070.tif", format = "GTiff", overwrite = TRUE)
+#writeRaster(sd_raster, "~/R/Intermediate_Wheatgrass_collab/IWG_SD_13_model_SDM_future_2050.tif", format = "GTiff", overwrite = TRUE)
 
 
 #Plots - whole world
