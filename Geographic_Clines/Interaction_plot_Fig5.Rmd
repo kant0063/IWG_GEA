@@ -1,0 +1,297 @@
+---
+title: "Figure 5A"
+author: "Elizabeth Campbell"
+date: "2026-07-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#===============================================================================
+# Figure 5: Interaction Plots — Schematic (A, B) + Real Data (C, D)
+# Intermediate Wheatgrass (Thinopyrum intermedium)
+#
+# Author: Elizabeth Campbell
+# Affiliation: Department of Tropical Plant and Soil Sciences,
+#              University of Hawaii at Manoa
+#
+# Panels A & B: Schematic illustrations (unchanged from original)
+# Panels C & D: Real data — SJ06_504005260 × BIO8 and SV07_374076699 × BIO9
+#===============================================================================
+
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(vcfR)
+
+# Setup
+BASE_DIR   <- "C:/Users/Lizzy/OneDrive/Documents/UH_Manoa_Classes/IWG_Chapter_2"
+OUTPUT_DIR <- file.path(BASE_DIR, "Analysis_Outputs_and_Visualizations/Figures")
+DATA_DIR   <- file.path(BASE_DIR, "Data")
+dir.create(OUTPUT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+set.seed(42)
+
+# Shared theme (identical to original)
+shared_theme <- theme_bw(base_size = 12) +
+  theme(
+    legend.title      = element_blank(),
+    legend.background = element_rect(fill = "white", color = "black"),
+    plot.title        = element_text(face = "bold", size = 13, hjust = 0),
+    plot.subtitle     = element_text(size = 10, hjust = 0),
+    axis.title        = element_text(face = "bold", size = 12),
+    panel.grid.minor  = element_blank()
+  )
+
+pop_colors <- c(
+  "Pop 1" = "#e41a1c", "Pop 2" = "#377eb8", "Pop 3" = "#4daf4a",
+  "Pop 4" = "#984ea3", "Pop 5" = "#ff7f00", "Pop 6" = "#a65628"
+)
+
+#===============================================================================
+# PANEL A: SCHEMATIC — DIVERGENT (unchanged from original)
+#===============================================================================
+
+climate_range <- seq(50, 200, length.out = 50)
+
+populations_div <- list(
+  "Pop 1" = list(slope = 0.0025,  intercept = 0.3,  color = "#e41a1c"),
+  "Pop 2" = list(slope = 0.0010,  intercept = 0.45, color = "#377eb8"),
+  "Pop 3" = list(slope = 0.0035,  intercept = 0.2,  color = "#4daf4a"),
+  "Pop 4" = list(slope = 0.0015,  intercept = 0.5,  color = "#984ea3"),
+  "Pop 5" = list(slope = 0.0005,  intercept = 0.55, color = "#ff7f00"),
+  "Pop 6" = list(slope = -0.0005, intercept = 0.6,  color = "#a65628")
+)
+
+data_div <- do.call(rbind, lapply(names(populations_div), function(pop) {
+  params <- populations_div[[pop]]
+  freq   <- params$slope * climate_range + params$intercept
+  freq   <- pmax(0, pmin(1, freq))
+  data.frame(
+    climate     = climate_range,
+    allele_freq = freq,
+    population  = pop,
+    color       = params$color
+  )
+}))
+
+panel_a <- ggplot(data_div, aes(x = climate, y = allele_freq, color = population)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+  scale_color_manual(values = setNames(sapply(populations_div, `[[`, "color"),
+                                       names(populations_div))) +
+  labs(
+    x        = "Precipitation Wettest Month (mm)",
+    y        = "Allele Frequency",
+    title    = "A. Divergent Adaptation: SJ02_159395471",
+    subtitle = expression(paste("Significant G×P interaction (q = 5.2×10"^-9*", R² = 34.0%)"))
+  ) +
+  ylim(-0.05, 1.05) +
+  shared_theme +
+  theme(legend.position = c(0.15, 0.25)) +
+  annotate("text", x = 180, y = 0.95,
+           label = "Different slopes indicate\npopulation-specific effects",
+           size = 3.5, hjust = 1)
+
+#===============================================================================
+# PANEL B: SCHEMATIC — PARALLEL (unchanged from original)
+#===============================================================================
+
+climate_range2 <- seq(30, 95, length.out = 50)
+
+populations_par <- list(
+  "Pop 1" = list(slope = 0.0080, intercept = 0.15, color = "#e41a1c"),
+  "Pop 2" = list(slope = 0.0080, intercept = 0.25, color = "#377eb8"),
+  "Pop 3" = list(slope = 0.0080, intercept = 0.10, color = "#4daf4a"),
+  "Pop 4" = list(slope = 0.0080, intercept = 0.35, color = "#984ea3"),
+  "Pop 5" = list(slope = 0.0080, intercept = 0.30, color = "#ff7f00"),
+  "Pop 6" = list(slope = 0.0080, intercept = 0.20, color = "#a65628")
+)
+
+data_par <- do.call(rbind, lapply(names(populations_par), function(pop) {
+  params <- populations_par[[pop]]
+  freq   <- params$slope * climate_range2 + params$intercept
+  freq   <- pmax(0, pmin(1, freq))
+  data.frame(
+    climate     = climate_range2,
+    allele_freq = freq,
+    population  = pop,
+    color       = params$color
+  )
+}))
+
+panel_b <- ggplot(data_par, aes(x = climate, y = allele_freq, color = population)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+  scale_color_manual(values = setNames(sapply(populations_par, `[[`, "color"),
+                                       names(populations_par))) +
+  labs(
+    x        = "Precipitation Seasonality (Coefficient of Variation, %)",
+    y        = "Allele Frequency",
+    title    = "B. Parallel Adaptation: SS01_212548100",
+    subtitle = expression(paste("No G×P interaction (q = 0.19), genome-wide sig. (p = 7.6×10"^-9*", R² = 10.4%)"))
+  ) +
+  ylim(-0.05, 1.05) +
+  shared_theme +
+  theme(legend.position = c(0.15, 0.25)) +
+  annotate("text", x = 90, y = 0.25,
+           label = "Parallel slopes indicate\nuniversal adaptation",
+           size = 3.5, hjust = 1)
+
+#===============================================================================
+# REAL DATA: Load VCF, clusters, bioclim
+#===============================================================================
+
+vcf_path     <- file.path(DATA_DIR, "Processed_Data/IWG_PI.vcf")
+bioclim_path <- file.path(DATA_DIR, "Phenotype_and_Ecographic_Data/IWG_bioclim.csv")
+cluster_path <- file.path(DATA_DIR, "Hierarchical Clusters/IWG_pca_clusters_k6.csv")
+
+vcf      <- read.vcfR(vcf_path, verbose = FALSE)
+bioclim  <- read.csv(bioclim_path, check.names = FALSE)
+clusters <- read.csv(cluster_path)
+
+# Cluster lookup
+cluster_lookup <- setNames(as.character(clusters$Cluster), clusters$Accession)
+
+# Helper: extract allele frequency for one SNP x bioclim combo
+make_real_panel <- function(snp_id, bio_col, xlabel, title, subtitle,
+                            ann_x, ann_y, ann_label, legend_pos,
+                            panel_letter) {
+
+  # Find SNP in VCF
+  fixed   <- as.data.frame(getFIX(vcf))
+  snp_idx <- which(fixed$ID == snp_id)
+  if (length(snp_idx) == 0) stop(paste("SNP not found:", snp_id))
+
+  ref <- fixed$REF[snp_idx]
+  alt <- fixed$ALT[snp_idx]
+
+  # Extract genotypes
+  gt_mat <- extract.gt(vcf[snp_idx, ], element = "GT", as.numeric = FALSE)
+
+  # Convert GT to alt allele frequency (0, 0.5, 1)
+  gt_to_freq <- function(gt) {
+    if (is.na(gt) || gt %in% c("./.", ".|.")) return(NA)
+    alleles <- as.integer(strsplit(gt, "[/|]")[[1]])
+    mean(alleles)
+  }
+
+  accessions <- colnames(gt_mat)
+  af_vals    <- sapply(gt_mat[1, ], gt_to_freq)
+
+  # Build data frame
+  df <- data.frame(
+    accession  = accessions,
+    allele_freq = af_vals,
+    stringsAsFactors = FALSE
+  )
+
+  # Add cluster and bioclim
+  df$population <- paste0("Pop ", cluster_lookup[df$accession])
+  df$climate    <- bioclim[[bio_col]][match(df$accession, bioclim[[1]])]
+  df <- df[!is.na(df$population) & !is.na(df$climate) & !is.na(df$allele_freq), ]
+  df <- df[df$population %in% paste0("Pop ", 1:6), ]
+
+  # Global x range across all populations
+  x_global_min <- min(df$climate, na.rm = TRUE)
+  x_global_max <- max(df$climate, na.rm = TRUE)
+
+  # Fit linear model per population and generate smooth line
+  plot_data <- do.call(rbind, lapply(paste0("Pop ", 1:6), function(pop) {
+    sub <- df[df$population == pop, ]
+    if (nrow(sub) < 3) return(NULL)
+    fit    <- lm(allele_freq ~ climate, data = sub)
+    x_grid <- seq(x_global_min, x_global_max, length.out = 50)
+    y_pred <- predict(fit, newdata = data.frame(climate = x_grid))
+    y_pred <- pmax(0, y_pred)
+    y_pred <- pmax(0, y_pred)
+    data.frame(
+      climate     = x_grid,
+      allele_freq = y_pred,
+      population  = pop,
+      is_point    = FALSE
+    )
+  }))
+
+  ggplot(plot_data, aes(x = climate, y = allele_freq, color = population)) +
+    geom_line(size = 1.2, alpha = 0.8) +
+    scale_color_manual(values = pop_colors) +
+    labs(x = xlabel, y = "Allele Frequency",
+         title = title, subtitle = subtitle) +
+    ylim(-0.05, 1.05) +
+    shared_theme +
+    theme(legend.position = legend_pos) +
+    annotate("text", x = ann_x, y = ann_y,
+             label = ann_label, size = 3.5, hjust = 1)
+}
+
+#===============================================================================
+# PANEL C: REAL DATA — POPULATION-SPECIFIC (SJ06_504005260 × BIO8)
+#===============================================================================
+
+panel_c <- make_real_panel(
+  snp_id     = "SJ06_504005260",
+  bio_col    = "wc2.1_30s_bio_8",
+  xlabel     = "Mean Temp Wettest Quarter (°C×10)",
+  title      = "C. Population-specific Adaptation: SJ06_504005260",
+  subtitle   = "Significant G×P interaction (q = 1.92×10⁻²)",
+  ann_x      = 18,
+  ann_y      = 0.95,
+  ann_label  = "Different slopes indicate\npopulation-specific effects",
+  legend_pos = c(0.15, 0.75)
+)
+
+#===============================================================================
+# PANEL D: REAL DATA — PARALLEL (SV07_374076699 × BIO9)
+#===============================================================================
+
+panel_d <- make_real_panel(
+  snp_id     = "SV07_374076699",
+  bio_col    = "wc2.1_30s_bio_9",
+  xlabel     = "Mean Temp Driest Quarter (°C×10)",
+  title      = "D. Parallel Adaptation: SV07_374076699",
+  subtitle   = "No G×P interaction (q = 0.06)",
+  ann_x      = 25,
+  ann_y      = 0.95,
+  ann_label  = "Parallel slopes indicate\nuniversal adaptation",
+  legend_pos = c(0.15, 0.75)
+)
+
+#===============================================================================
+# COMBINE AND SAVE — 2×2 layout
+#===============================================================================
+
+combined_plot <- arrangeGrob(panel_a, panel_b, panel_c, panel_d,
+                              ncol = 2, nrow = 2)
+
+ggsave(file.path(OUTPUT_DIR, "Figure6_four_panel.png"), combined_plot,
+       width = 14, height = 12, dpi = 300, bg = "white")
+
+ggsave(file.path(OUTPUT_DIR, "Figure6_four_panel.pdf"), combined_plot,
+       width = 14, height = 12, bg = "white")
+
+cat("\n✓ Figure 6 four-panel saved to:", OUTPUT_DIR, "\n")
+
+
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
